@@ -38,6 +38,7 @@ npx @ai-application-toolkit/codegraph build ./src --json > graph.json
 npx @ai-application-toolkit/codegraph build ./src --lang typescript,python,csharp
 
 # Serve the graph as an MCP server over HTTP …
+# (omit --port to auto-select a free port from 3000; a busy --port falls back to the next free one)
 npx @ai-application-toolkit/codegraph serve ./src --port 3000
 
 # … and publish a public URL via untun (Cloudflare quick tunnel)
