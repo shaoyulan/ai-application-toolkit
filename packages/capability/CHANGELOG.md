@@ -1,5 +1,13 @@
 # @ai-application-toolkit/capability
 
+## 0.1.1
+
+### Patch Changes
+
+- Updated dependencies [c98654b]
+  - @ai-application-toolkit/core@0.1.1
+  - @ai-application-toolkit/tool@0.1.1
+
 ## 0.1.0
 
 ### Minor Changes

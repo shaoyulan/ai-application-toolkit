@@ -1,6 +1,6 @@
 {
   "name": "@ai-application-toolkit/examples",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "private": true,
   "type": "module",
   "description": "Runnable examples for the AI Application Toolkit.",
