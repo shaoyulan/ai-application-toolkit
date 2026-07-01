@@ -1,5 +1,18 @@
 # @ai-application-toolkit/examples
 
+## 0.0.2
+
+### Patch Changes
+
+- @ai-application-toolkit/capability@0.1.1
+- @ai-application-toolkit/codegraph@0.1.1
+- @ai-application-toolkit/guardrail@0.1.1
+- @ai-application-toolkit/mcp@0.1.1
+- @ai-application-toolkit/vercel-ai@0.1.1
+- @ai-application-toolkit/runtime@0.1.1
+- @ai-application-toolkit/tool@0.1.1
+- @ai-application-toolkit/otel@0.1.0
+
 ## 0.0.1
 
 ### Patch Changes

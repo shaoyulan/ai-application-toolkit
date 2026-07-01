@@ -1,5 +1,11 @@
 # @ai-application-toolkit/core
 
+## 0.1.1
+
+### Patch Changes
+
+- c98654b: Clarify the core package README description.
+
 ## 0.1.0
 
 ### Minor Changes

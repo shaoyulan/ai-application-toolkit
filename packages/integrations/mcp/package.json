@@ -1,6 +1,6 @@
 {
   "name": "@ai-application-toolkit/mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Expose AI Application Toolkit tools as a Model Context Protocol (MCP) server.",
   "license": "MIT",
   "author": "Danny LAN <45042818+shaoyulan@users.noreply.github.com>",
