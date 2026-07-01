@@ -1,6 +1,6 @@
 {
   "name": "@ai-application-toolkit/codegraph",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Turn a folder of source code into a queryable, multi-language code graph (symbols, imports, references) with LLM context ranking.",
   "license": "MIT",
   "author": "Danny LAN <45042818+shaoyulan@users.noreply.github.com>",
