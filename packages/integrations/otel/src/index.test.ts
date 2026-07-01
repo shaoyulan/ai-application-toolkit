@@ -5,7 +5,7 @@ import {
   SimpleSpanProcessor,
   type ReadableSpan
 } from '@opentelemetry/sdk-trace-base'
-import { SpanStatusCode } from '@opentelemetry/api'
+import { SpanStatusCode, trace } from '@opentelemetry/api'
 import { defineTool } from '@ai-application-toolkit/tool'
 import { defineGuardrail } from '@ai-application-toolkit/guardrail'
 import { createRuntime } from '@ai-application-toolkit/runtime'
@@ -99,5 +99,111 @@ describe('createOpenTelemetryTraceSink', () => {
     const { exporter, trace } = setup()
     trace.emit({ type: 'runtime:end', timestamp: 1, runId: 'never' })
     expect(exporter.getFinishedSpans()).toHaveLength(0)
+  })
+
+  it('falls back to a plain execute_tool span when toolId is absent or non-string', () => {
+    const { exporter, trace } = setup()
+    // toolId omitted entirely
+    trace.emit({ type: 'runtime:start', timestamp: 1, runId: 'a' })
+    trace.emit({ type: 'runtime:end', timestamp: 2, runId: 'a' })
+    // toolId present but not a string -> asString returns undefined
+    trace.emit({
+      type: 'runtime:start',
+      timestamp: 3,
+      runId: 'b',
+      data: { toolId: 42 }
+    })
+    trace.emit({ type: 'runtime:end', timestamp: 4, runId: 'b' })
+
+    const spans = exporter.getFinishedSpans()
+    expect(spans).toHaveLength(2)
+    for (const span of spans) {
+      expect(span.name).toBe('execute_tool')
+      expect(span.attributes['gen_ai.tool.name']).toBeUndefined()
+      expect(span.attributes['gen_ai.operation.name']).toBe('execute_tool')
+    }
+  })
+
+  it('records tool:start/tool:end and tool:error as events and an exception', () => {
+    const { exporter, trace } = setup()
+    const cause = new Error('boom')
+    trace.emit({ type: 'runtime:start', timestamp: 1, runId: 'r', data: { toolId: 't' } })
+    trace.emit({ type: 'tool:start', timestamp: 2, runId: 'r' })
+    trace.emit({ type: 'tool:error', timestamp: 3, runId: 'r', data: { cause } })
+    trace.emit({ type: 'tool:end', timestamp: 4, runId: 'r' })
+    trace.emit({ type: 'runtime:end', timestamp: 5, runId: 'r' })
+
+    const span = only(exporter)
+    expect(span.events.map((e) => e.name)).toEqual([
+      'tool:start',
+      'exception',
+      'tool:end'
+    ])
+  })
+
+  it('ignores a tool:error whose cause is not an Error instance', () => {
+    const { exporter, trace } = setup()
+    trace.emit({ type: 'runtime:start', timestamp: 1, runId: 'r', data: { toolId: 't' } })
+    trace.emit({ type: 'tool:error', timestamp: 2, runId: 'r', data: { cause: 'nope' } })
+    trace.emit({ type: 'runtime:end', timestamp: 3, runId: 'r' })
+
+    const span = only(exporter)
+    expect(span.events.some((e) => e.name === 'exception')).toBe(false)
+  })
+
+  it('marks a runtime:error with no code as ERROR without an error.type attribute', () => {
+    const { exporter, trace } = setup()
+    trace.emit({ type: 'runtime:start', timestamp: 1, runId: 'r', data: { toolId: 't' } })
+    trace.emit({ type: 'runtime:error', timestamp: 2, runId: 'r' })
+
+    const span = only(exporter)
+    expect(span.status.code).toBe(SpanStatusCode.ERROR)
+    expect(span.attributes['error.type']).toBeUndefined()
+  })
+
+  it('omits guardrail attributes that are missing or non-string', () => {
+    const { exporter, trace } = setup()
+    trace.emit({ type: 'runtime:start', timestamp: 1, runId: 'r', data: { toolId: 't' } })
+    trace.emit({
+      type: 'guardrail:blocked',
+      timestamp: 2,
+      runId: 'r',
+      data: { guardrailId: 123, reason: null }
+    })
+    trace.emit({ type: 'runtime:end', timestamp: 3, runId: 'r' })
+
+    const span = only(exporter)
+    const blocked = span.events.find((e) => e.name === 'guardrail:blocked')
+    expect(blocked).toBeDefined()
+    expect(blocked?.attributes).toEqual({})
+  })
+
+  it('ignores guardrail:blocked, tool:error and runtime:error for a run that never started', () => {
+    const { exporter, trace } = setup()
+    trace.emit({ type: 'guardrail:blocked', timestamp: 1, runId: 'x', data: {} })
+    trace.emit({ type: 'tool:error', timestamp: 2, runId: 'x', data: { cause: new Error('e') } })
+    trace.emit({ type: 'runtime:error', timestamp: 3, runId: 'x', data: { code: 'X' } })
+    expect(exporter.getFinishedSpans()).toHaveLength(0)
+  })
+
+  it('uses the global tracer when no tracer option is provided', () => {
+    const exporter = new InMemorySpanExporter()
+    const provider = new BasicTracerProvider({
+      spanProcessors: [new SimpleSpanProcessor(exporter)]
+    })
+    const previous = trace.getTracerProvider()
+    trace.setGlobalTracerProvider(provider)
+    try {
+      const sink = createOpenTelemetryTraceSink()
+      sink.emit({ type: 'runtime:start', timestamp: 1, runId: 'g', data: { toolId: 't' } })
+      sink.emit({ type: 'runtime:end', timestamp: 2, runId: 'g' })
+
+      const span = only(exporter)
+      expect(span.name).toBe('execute_tool t')
+      expect(span.status.code).toBe(SpanStatusCode.OK)
+    } finally {
+      trace.disable()
+      trace.setGlobalTracerProvider(previous)
+    }
   })
 })
