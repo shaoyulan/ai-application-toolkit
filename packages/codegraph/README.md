@@ -37,8 +37,15 @@ npx @ai-application-toolkit/codegraph build ./src --json > graph.json
 # Restrict languages
 npx @ai-application-toolkit/codegraph build ./src --lang typescript,python,csharp
 
+# Build/update a persistent, incremental index under ./src/.codegraph/
+# (unchanged files are never re-parsed — a warm run is near-instant)
+npx @ai-application-toolkit/codegraph index ./src
+npx @ai-application-toolkit/codegraph status ./src   # freshness, size, counts
+
 # Serve the graph as an MCP server over HTTP …
 # (omit --port to auto-select a free port from 3000; a busy --port falls back to the next free one)
+# serve loads the persistent index and watches for changes, hot-swapping the
+# graph on edits — pass --no-watch to disable.
 npx @ai-application-toolkit/codegraph serve ./src --port 3000
 
 # … and publish a public URL via untun (Cloudflare quick tunnel)
@@ -49,6 +56,15 @@ npx @ai-application-toolkit/codegraph serve ./src --tunnel
 `--tunnel` needs `untun`; both are imported lazily so `build` stays lightweight.
 On its first run `--tunnel` downloads `cloudflared` and prompts you to accept
 its license, so run it in an interactive terminal.
+
+### Persistent index
+
+`index`, `sync` and `serve` keep a SQLite index at `<dir>/.codegraph/index.db`,
+caching per-file parse results keyed by content hash so only changed files are
+re-parsed. This needs the optional dependency `better-sqlite3` (it ships prebuilt
+binaries, so there is usually no native build step); if it is unavailable,
+`serve` degrades gracefully to a plain in-memory build. Add `.codegraph/` to your
+`.gitignore`.
 
 ## Library API
 

@@ -34,12 +34,15 @@ function serializeNode(node: GraphNode) {
 const EDGE_KINDS: EdgeKind[] = ['contains', 'imports', 'references']
 
 export function defineCodegraphCapability(
-  graph: CodeGraph,
+  graph: CodeGraph | (() => CodeGraph),
   options: CodegraphCapabilityOptions = {}
 ): Capability {
   const prefix = options.idPrefix ?? 'codegraph'
   const defaultLimit = options.defaultLimit ?? 25
   const id = (name: string) => `${prefix}_${name}`
+  // Resolve lazily so `serve --watch` can hot-swap the graph after an
+  // incremental rebuild without recreating the capability.
+  const getGraph = typeof graph === 'function' ? graph : () => graph
 
   const searchSymbols = defineTool<
     { name?: string; kind?: SymbolKind; limit?: number },
@@ -63,7 +66,7 @@ export function defineCodegraphCapability(
     },
     execute: ({ name, kind, limit }) => {
       const needle = name?.toLowerCase()
-      const matches = graph
+      const matches = getGraph()
         .symbols()
         .filter((s) => (needle ? s.name.toLowerCase().includes(needle) : true))
         .filter((s) => (kind ? s.symbolKind === kind : true))
@@ -84,7 +87,7 @@ export function defineCodegraphCapability(
       required: ['name'],
       additionalProperties: false
     },
-    execute: ({ name }) => graph.findDefinition(name).map(serializeNode)
+    execute: ({ name }) => getGraph().findDefinition(name).map(serializeNode)
   })
 
   const findReferences = defineTool<
@@ -103,7 +106,7 @@ export function defineCodegraphCapability(
       additionalProperties: false
     },
     execute: ({ symbol, limit }) =>
-      graph.findReferences(symbol).slice(0, limit ?? defaultLimit).map(serializeNode)
+      getGraph().findReferences(symbol).slice(0, limit ?? defaultLimit).map(serializeNode)
   })
 
   const neighbors = defineTool<
@@ -128,7 +131,7 @@ export function defineCodegraphCapability(
       additionalProperties: false
     },
     execute: ({ id: nodeId, direction = 'both', edgeKinds, limit }) =>
-      graph
+      getGraph()
         .neighbors(nodeId, {
           outgoing: direction !== 'in',
           incoming: direction !== 'out',
@@ -155,7 +158,7 @@ export function defineCodegraphCapability(
       additionalProperties: false
     },
     execute: ({ path }) => {
-      const summary = graph.fileSummary(path)
+      const summary = getGraph().fileSummary(path)
       if (!summary) return null
       return {
         file: serializeNode(summary.file),
@@ -186,7 +189,7 @@ export function defineCodegraphCapability(
       additionalProperties: false
     },
     execute: ({ seeds, kind, limit }) =>
-      graph
+      getGraph()
         .rankedContext({ seeds, kind, limit: limit ?? defaultLimit })
         .map((r) => ({ node: serializeNode(r.node), score: r.score }))
   })

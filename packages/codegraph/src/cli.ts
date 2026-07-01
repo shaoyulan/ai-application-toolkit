@@ -2,21 +2,32 @@
 /**
  * codegraph CLI — `npx @ai-application-toolkit/codegraph <command>`.
  *
- *   codegraph build <dir> [--json] [--lang ts,py] [--limit N]
- *   codegraph serve <dir> [--port 3000] [--path /mcp] [--tunnel] [--lang …]
+ *   codegraph build  <dir> [--json] [--lang ts,py] [--limit N]
+ *   codegraph index  <dir> [--lang …] [--force]      Persist an incremental index
+ *   codegraph sync   <dir> [--lang …]                Update the index in place
+ *   codegraph status <dir>                           Show index freshness
+ *   codegraph serve  <dir> [--port 3000] [--path /mcp] [--tunnel] [--no-watch] [--lang …]
  *
- * `serve` exposes the graph as an MCP server over Streamable HTTP. `--tunnel`
- * additionally publishes a public URL via untun (Cloudflare quick tunnel).
+ * `index`/`sync`/`serve` persist a SQLite index under `<dir>/.codegraph/` so
+ * unchanged files are never re-parsed. `serve` exposes the graph as an MCP server
+ * over Streamable HTTP and (by default) watches for changes and hot-swaps the
+ * served graph. `--tunnel` publishes a public URL via untun.
  *
- * `@ai-application-toolkit/mcp` (for serve) and `untun` (for --tunnel) are
- * optional dependencies, imported lazily so `build` stays lightweight.
+ * `@ai-application-toolkit/mcp` (serve), `untun` (--tunnel) and `better-sqlite3`
+ * (persistence) are optional dependencies, imported lazily so `build` stays
+ * lightweight and installs stay soft.
  */
+import { existsSync, statSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import { collectCapabilityTools } from '@ai-application-toolkit/capability'
-import { buildCodeGraph, type BuildCodeGraphOptions } from './build.js'
+import { buildCodeGraph, type BuildCodeGraphOptions, type BuildStats } from './build.js'
+import type { CodeGraph } from './graph.js'
 import { findAvailablePort } from './port.js'
+import type { GraphStore } from './store.js'
+import { openSqliteStore } from './store.sqlite.js'
 import { defineCodegraphCapability } from './tools.js'
+import { watchDirectory, type Watcher } from './watch.js'
 
 const DEFAULT_PORT = 3000
 
@@ -26,6 +37,8 @@ interface Flags {
   tunnel: boolean
   help: boolean
   version: boolean
+  force: boolean
+  watch?: boolean
   port?: number
   path?: string
   lang?: string[]
@@ -33,12 +46,15 @@ interface Flags {
 }
 
 function parseArgs(argv: string[]): Flags {
-  const flags: Flags = { positionals: [], json: false, tunnel: false, help: false, version: false }
+  const flags: Flags = { positionals: [], json: false, tunnel: false, help: false, version: false, force: false }
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
     switch (arg) {
       case '--json': flags.json = true; break
       case '--tunnel': flags.tunnel = true; break
+      case '--force': flags.force = true; break
+      case '--watch': flags.watch = true; break
+      case '--no-watch': flags.watch = false; break
       case '--help': case '-h': flags.help = true; break
       case '--version': case '-v': flags.version = true; break
       case '--port': flags.port = Number(argv[++i]); break
@@ -61,23 +77,32 @@ function fail(message: string): never {
 const HELP = `codegraph — turn a folder into a multi-language code graph
 
 Usage:
-  codegraph build <dir> [options]    Build the graph and print a summary
-  codegraph serve <dir> [options]    Serve the graph as an MCP server (HTTP)
+  codegraph build  <dir> [options]   Build the graph and print a summary (in-memory)
+  codegraph index  <dir> [options]   Build/update a persistent incremental index
+  codegraph sync   <dir> [options]   Update the persistent index in place
+  codegraph status <dir>             Show the persistent index's freshness
+  codegraph serve  <dir> [options]   Serve the graph as an MCP server (HTTP)
 
 Options:
   --json            (build) Print the full graph as JSON to stdout
   --limit <n>       (build) Number of ranked symbols to show (default 10)
   --lang <a,b>      Restrict to language ids (e.g. typescript,python,csharp)
+  --force           (index) Rebuild from scratch, ignoring the cache
   --port <n>        (serve) HTTP port. Omit to auto-select a free port from 3000;
                     if a given port is busy, the next free port is used.
   --path <p>        (serve) MCP endpoint path (default /mcp)
   --tunnel          (serve) Publish a public URL via untun (Cloudflare tunnel)
+  --no-watch        (serve) Do not watch for changes / hot-swap the graph
   -h, --help        Show this help
   -v, --version     Show version
 
+Persistence: index/sync/serve store a SQLite index under <dir>/.codegraph/
+(requires the optional dependency "better-sqlite3"). Serve falls back to an
+in-memory build if it is unavailable.
+
 Examples:
-  npx @ai-application-toolkit/codegraph build ./src
-  npx @ai-application-toolkit/codegraph build ./src --json > graph.json
+  npx @ai-application-toolkit/codegraph index ./src
+  npx @ai-application-toolkit/codegraph status ./src
   npx @ai-application-toolkit/codegraph serve ./src --port 3030 --tunnel`
 
 async function readVersion(): Promise<string> {
@@ -91,6 +116,14 @@ async function readVersion(): Promise<string> {
 
 function buildOptions(dir: string, flags: Flags): BuildCodeGraphOptions {
   return { dir, ...(flags.lang ? { languages: flags.lang } : {}) }
+}
+
+const storePath = (dir: string): string => join(dir, '.codegraph', 'index.db')
+
+function describeStats(stats: BuildStats): string {
+  const parts = [`parsed ${stats.parsed}`, `reused ${stats.reused}`]
+  if (stats.deleted > 0) parts.push(`removed ${stats.deleted}`)
+  return parts.join(', ')
 }
 
 async function cmdBuild(dir: string, flags: Flags): Promise<void> {
@@ -114,15 +147,68 @@ async function cmdBuild(dir: string, flags: Flags): Promise<void> {
   }
 }
 
+async function cmdIndex(dir: string, flags: Flags): Promise<void> {
+  const dbPath = storePath(dir)
+  if (flags.force && existsSync(dbPath)) {
+    const { rmSync } = await import('node:fs')
+    rmSync(join(dir, '.codegraph'), { recursive: true, force: true })
+  }
+  const store: GraphStore = openSqliteStore(dbPath)
+  try {
+    let stats: BuildStats | undefined
+    const graph = await buildCodeGraph({ ...buildOptions(dir, flags), store, onStats: (s) => (stats = s) })
+    console.log(
+      `Indexed ${graph.files().length} files (${describeStats(stats!)}), ` +
+        `${graph.symbols().length} symbols, ${graph.edges().length} edges.`
+    )
+    console.log(`Index: ${dbPath}`)
+  } finally {
+    store.close()
+  }
+}
+
+async function cmdStatus(dir: string): Promise<void> {
+  const dbPath = storePath(dir)
+  if (!existsSync(dbPath)) {
+    console.log(`No index found at ${dbPath}. Run "codegraph index ${dir}" first.`)
+    return
+  }
+  const store: GraphStore = openSqliteStore(dbPath)
+  try {
+    const meta = await store.meta()
+    const hashes = await store.getFileHashes()
+    const graph = await store.loadGraph()
+    const sizeMb = (statSync(dbPath).size / 1_000_000).toFixed(2)
+    console.log(`Index: ${dbPath} (${sizeMb} MB)`)
+    console.log(`Cached files: ${hashes.size}`)
+    if (graph) console.log(`Graph: ${graph.nodes.length} nodes, ${graph.edges.length} edges`)
+    if (meta) {
+      console.log(`Schema v${meta.schemaVersion}, tree-sitter ${meta.treeSitterVersion}`)
+    }
+  } finally {
+    store.close()
+  }
+}
+
 async function cmdServe(dir: string, flags: Flags): Promise<void> {
   const mcp = await import('@ai-application-toolkit/mcp').catch(() =>
     fail('serve requires the optional dependency "@ai-application-toolkit/mcp" (npm i @ai-application-toolkit/mcp)')
   )
 
-  const graph = await buildCodeGraph(buildOptions(dir, flags))
+  // Persistence is best-effort: if better-sqlite3 is unavailable, serve still
+  // works from an in-memory build (without incremental caching / hot-swap).
+  let store: GraphStore | undefined
+  try {
+    store = openSqliteStore(storePath(dir))
+  } catch {
+    console.warn('better-sqlite3 not available — serving from an in-memory build (no incremental cache).')
+  }
+
+  const options: BuildCodeGraphOptions = { ...buildOptions(dir, flags), ...(store ? { store } : {}) }
+  let graph: CodeGraph = await buildCodeGraph({ ...options, onStats: (s) => console.log(`(${describeStats(s)})`) })
   console.log(`Indexed ${graph.files().length} files, ${graph.symbols().length} symbols.`)
 
-  const capability = defineCodegraphCapability(graph)
+  const capability = defineCodegraphCapability(() => graph)
   const path = flags.path ?? '/mcp'
 
   const preferredPort = flags.port ?? DEFAULT_PORT
@@ -147,6 +233,19 @@ async function cmdServe(dir: string, flags: Flags): Promise<void> {
   console.log(`\nMCP server listening on ${localUrl}`)
   console.log('Tools: ' + capability.tools.map((t) => t.id).join(', '))
 
+  let watcher: Watcher | undefined
+  if (store && flags.watch !== false) {
+    watcher = watchDirectory(
+      dir,
+      async () => {
+        graph = await buildCodeGraph(options)
+        console.log(`Re-synced: ${graph.files().length} files, ${graph.symbols().length} symbols.`)
+      },
+      { onError: (error) => console.warn('watch:', error instanceof Error ? error.message : error) }
+    )
+    console.log('Watching for changes… (--no-watch to disable)')
+  }
+
   let tunnel: { getURL(): Promise<string>; close(): Promise<void> } | undefined
   if (flags.tunnel) {
     const untun = await import('untun').catch(() =>
@@ -160,8 +259,10 @@ async function cmdServe(dir: string, flags: Flags): Promise<void> {
 
   const shutdown = async () => {
     console.log('\nShutting down…')
+    watcher?.close()
     if (tunnel) await tunnel.close().catch(() => {})
     server.close()
+    store?.close()
     process.exit(0)
   }
   process.on('SIGINT', shutdown)
@@ -180,12 +281,17 @@ async function main(): Promise<void> {
     console.log(HELP)
     return
   }
-  if (command !== 'build' && command !== 'serve') fail(`Unknown command: ${command}`)
+  const commands = ['build', 'index', 'sync', 'status', 'serve']
+  if (!commands.includes(command)) fail(`Unknown command: ${command}`)
   if (!dirArg) fail(`${command} requires a <dir> argument`)
   const dir = resolve(process.cwd(), dirArg)
 
-  if (command === 'build') await cmdBuild(dir, flags)
-  else await cmdServe(dir, flags)
+  switch (command) {
+    case 'build': await cmdBuild(dir, flags); break
+    case 'index': case 'sync': await cmdIndex(dir, flags); break
+    case 'status': await cmdStatus(dir); break
+    case 'serve': await cmdServe(dir, flags); break
+  }
 }
 
 main().catch((error: unknown) => {
