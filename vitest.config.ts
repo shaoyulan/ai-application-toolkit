@@ -5,7 +5,8 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       include: ['packages/**/src/**/*.ts'],
-      exclude: ['**/*.test.ts', '**/dist/**'],
+      // cli.ts is a thin argv/stdout entrypoint exercised end-to-end, not in unit tests
+      exclude: ['**/*.test.ts', '**/dist/**', '**/cli.ts'],
       reporter: ['text', 'text-summary'],
       thresholds: {
         lines: 90,
