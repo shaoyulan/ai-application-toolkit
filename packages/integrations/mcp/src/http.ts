@@ -106,7 +106,16 @@ export function startHttpMcpServer(
     })
   })
 
-  return new Promise((resolve) => {
-    httpServer.listen(options.port, options.hostname, () => resolve(httpServer))
+  return new Promise((resolve, reject) => {
+    const onError = (error: Error) => {
+      httpServer.removeListener('listening', onListening)
+      reject(error)
+    }
+    const onListening = () => {
+      httpServer.removeListener('error', onError)
+      resolve(httpServer)
+    }
+    httpServer.once('error', onError)
+    httpServer.listen(options.port, options.hostname, onListening)
   })
 }

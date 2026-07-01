@@ -15,7 +15,10 @@ import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { collectCapabilityTools } from '@ai-application-toolkit/capability'
 import { buildCodeGraph, type BuildCodeGraphOptions } from './build.js'
+import { findAvailablePort } from './port.js'
 import { defineCodegraphCapability } from './tools.js'
+
+const DEFAULT_PORT = 3000
 
 interface Flags {
   positionals: string[]
@@ -65,7 +68,8 @@ Options:
   --json            (build) Print the full graph as JSON to stdout
   --limit <n>       (build) Number of ranked symbols to show (default 10)
   --lang <a,b>      Restrict to language ids (e.g. typescript,python,csharp)
-  --port <n>        (serve) HTTP port (default 3000)
+  --port <n>        (serve) HTTP port. Omit to auto-select a free port from 3000;
+                    if a given port is busy, the next free port is used.
   --path <p>        (serve) MCP endpoint path (default /mcp)
   --tunnel          (serve) Publish a public URL via untun (Cloudflare tunnel)
   -h, --help        Show this help
@@ -119,17 +123,26 @@ async function cmdServe(dir: string, flags: Flags): Promise<void> {
   console.log(`Indexed ${graph.files().length} files, ${graph.symbols().length} symbols.`)
 
   const capability = defineCodegraphCapability(graph)
-  const port = flags.port ?? 3000
   const path = flags.path ?? '/mcp'
+
+  const preferredPort = flags.port ?? DEFAULT_PORT
+  const chosenPort = await findAvailablePort(preferredPort)
+  if (flags.port !== undefined && chosenPort !== flags.port) {
+    const target = chosenPort === 0 ? 'an OS-assigned free port' : `port ${chosenPort}`
+    console.warn(`Port ${flags.port} is already in use — falling back to ${target}.`)
+  }
 
   const server = await mcp.startHttpMcpServer({
     name: 'codegraph-mcp',
     version: await readVersion(),
     tools: collectCapabilityTools([capability]),
-    port,
+    port: chosenPort,
     path
   })
 
+  // Read the actually-bound port (authoritative when chosenPort was 0).
+  const address = server.address()
+  const port = typeof address === 'object' && address ? address.port : chosenPort
   const localUrl = `http://localhost:${port}${path}`
   console.log(`\nMCP server listening on ${localUrl}`)
   console.log('Tools: ' + capability.tools.map((t) => t.id).join(', '))
