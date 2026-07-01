@@ -8,9 +8,15 @@
 "@ai-application-toolkit/tool": minor
 "@ai-application-toolkit/trace": minor
 "@ai-application-toolkit/workflow": minor
+"@ai-application-toolkit/anthropic": minor
+"@ai-application-toolkit/openai": minor
 "@ai-application-toolkit/mcp": minor
 "@ai-application-toolkit/vercel-ai": minor
-"@ai-application-toolkit/openai": minor
 ---
 
-Initial public release of the AI Application Toolkit packages.
+Initial public release of the AI Application Toolkit.
+
+Ships the core primitives (tool, runtime, context, capability, workflow,
+guardrail, trace, cache), provider adapters for Anthropic (Claude) and OpenAI,
+and integrations for the Model Context Protocol (expose tools as an MCP server)
+and the Vercel AI SDK (use tools with `generateText`/`streamText`).

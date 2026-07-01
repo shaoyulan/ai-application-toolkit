@@ -1,0 +1,45 @@
+---
+title: "Cache"
+description: "A small async-friendly key-value store interface for memoizing expensive work"
+---
+
+Cache is a small, async-friendly key-value store interface for memoizing
+expensive work — model calls, retrieval, tool results. The toolkit ships an
+in-memory implementation with optional LRU eviction and TTL.
+
+```ts
+import { createMemoryCache } from '@ai-application-toolkit/cache'
+
+const cache = createMemoryCache<string>({ maxSize: 500, ttlMs: 60_000 })
+
+await cache.set('q:weather', 'sunny')
+await cache.has('q:weather') // true
+await cache.get('q:weather') // 'sunny'
+```
+
+## Options
+
+- `maxSize` — maximum entries; once exceeded, the least-recently-used entry is
+  evicted. Omit for an unbounded cache.
+- `ttlMs` — time-to-live per entry; expired entries read as missing and are
+  removed lazily. Omit for entries that never expire.
+
+Reading an entry marks it most-recently-used, so a hot key survives eviction.
+
+## The `CacheStore` interface
+
+All methods may be sync or async (`get`, `set`, `has`, `delete`, `clear`), so the
+same interface fits a Redis or file-backed store. Implement `CacheStore<T>` to
+plug in your own backend and keep call sites unchanged.
+
+```ts
+import type { CacheStore } from '@ai-application-toolkit/cache'
+
+const redisCache: CacheStore<string> = {
+  get: (key) => redis.get(key) ?? undefined,
+  set: (key, value) => redis.set(key, value),
+  has: async (key) => (await redis.exists(key)) === 1,
+  delete: (key) => redis.del(key),
+  clear: () => redis.flushdb()
+}
+```

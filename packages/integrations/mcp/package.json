@@ -1,9 +1,31 @@
 {
   "name": "@ai-application-toolkit/mcp",
   "version": "0.0.0",
-  "description": "AI Application Toolkit package",
+  "description": "Expose AI Application Toolkit tools as a Model Context Protocol (MCP) server.",
+  "license": "MIT",
+  "author": "Danny LAN <45042818+shaoyulan@users.noreply.github.com>",
+  "homepage": "https://github.com/shaoyulan/ai-application-toolkit/tree/main/packages/integrations/mcp#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shaoyulan/ai-application-toolkit.git",
+    "directory": "packages/integrations/mcp"
+  },
+  "bugs": {
+    "url": "https://github.com/shaoyulan/ai-application-toolkit/issues"
+  },
+  "keywords": [
+    "ai",
+    "llm",
+    "toolkit",
+    "anthropic",
+    "claude",
+    "mcp"
+  ],
   "type": "module",
   "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
   "files": [
     "dist"
   ],
@@ -17,11 +39,19 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "lint": "echo \"TODO: add eslint\"",
+    "lint": "eslint src",
     "clean": "rm -rf dist"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@ai-application-toolkit/core": "workspace:*",
+    "@ai-application-toolkit/runtime": "workspace:*",
+    "@ai-application-toolkit/tool": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "jose": "^6.2.0"
+  },
   "devDependencies": {
+    "@ai-application-toolkit/guardrail": "workspace:*",
+    "@types/node": "^22.10.0",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   },

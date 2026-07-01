@@ -1,11 +1,25 @@
 {
   "name": "ai-application-toolkit",
   "private": true,
+  "license": "MIT",
+  "author": "Danny LAN <45042818+shaoyulan@users.noreply.github.com>",
+  "homepage": "https://github.com/shaoyulan/ai-application-toolkit#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shaoyulan/ai-application-toolkit.git"
+  },
+  "bugs": {
+    "url": "https://github.com/shaoyulan/ai-application-toolkit/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "packageManager": "pnpm@9.15.0",
   "scripts": {
     "dev:docs": "pnpm --filter @ai-application-toolkit/docs dev",
     "build": "turbo run build",
     "test": "turbo run test",
+    "coverage": "vitest run --coverage",
     "typecheck": "turbo run typecheck",
     "lint": "turbo run lint",
     "clean": "turbo run clean",
@@ -15,8 +29,12 @@
   },
   "devDependencies": {
     "@changesets/cli": "^2.27.11",
+    "@eslint/js": "^9.17.0",
+    "@vitest/coverage-v8": "^2.1.8",
+    "eslint": "^9.17.0",
     "turbo": "^2.3.3",
     "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.0",
     "vitest": "^2.1.8"
   }
 }

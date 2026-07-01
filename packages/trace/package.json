@@ -1,9 +1,32 @@
 {
   "name": "@ai-application-toolkit/trace",
   "version": "0.0.0",
-  "description": "AI Application Toolkit package",
+  "description": "Trace event sinks for observing runtime execution.",
+  "license": "MIT",
+  "author": "Danny LAN <45042818+shaoyulan@users.noreply.github.com>",
+  "homepage": "https://github.com/shaoyulan/ai-application-toolkit/tree/main/packages/trace#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shaoyulan/ai-application-toolkit.git",
+    "directory": "packages/trace"
+  },
+  "bugs": {
+    "url": "https://github.com/shaoyulan/ai-application-toolkit/issues"
+  },
+  "keywords": [
+    "ai",
+    "llm",
+    "toolkit",
+    "anthropic",
+    "claude",
+    "trace",
+    "observability"
+  ],
   "type": "module",
   "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
   "files": [
     "dist"
   ],
@@ -17,7 +40,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "lint": "echo \"TODO: add eslint\"",
+    "lint": "eslint src",
     "clean": "rm -rf dist"
   },
   "dependencies": {},

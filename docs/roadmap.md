@@ -14,9 +14,9 @@
 - cache
 
 ## v0.3
-- provider adapters
-- Vercel AI integration
-- MCP integration
+- provider adapters (Anthropic + OpenAI shipped)
+- MCP integration (shipped — expose tools as an MCP server)
+- Vercel AI integration (shipped — use tools with generateText/streamText)
 
 ## v1.0
 - stable public API

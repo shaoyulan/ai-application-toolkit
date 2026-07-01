@@ -1,0 +1,52 @@
+---
+title: "Examples"
+description: "Runnable scripts in the examples directory you can run from the repo with pnpm"
+---
+
+Every example below is a runnable script in the [`examples/`](https://github.com/shaoyulan/ai-application-toolkit/tree/main/examples)
+directory. Run any of them from the repo with `pnpm` (they use `tsx`):
+
+```bash
+pnpm install
+pnpm --filter @ai-application-toolkit/examples basic-tool
+```
+
+Swap `basic-tool` for any script name in the tables below. Examples that call a
+model read their API key from the environment (`ANTHROPIC_API_KEY` /
+`OPENAI_API_KEY`).
+
+## Core
+
+| Script | What it shows |
+| --- | --- |
+| `basic-tool` | Define a tool and run it through the runtime |
+| `guarded-runtime` | Guardrails, base context, and a memory trace sink together |
+
+## Providers
+
+| Script | What it shows |
+| --- | --- |
+| `anthropic-adapter` | Generate text with the [Claude adapter](/providers/anthropic) |
+| `openai-adapter` | Generate text with the [OpenAI adapter](/providers/openai) |
+
+## Integrations
+
+| Script | What it shows |
+| --- | --- |
+| `vercel-ai-tools` | Let a model call toolkit tools via the [Vercel AI SDK](/integrations/vercel-ai) |
+| `otel-trace` | Export runtime execution as [OpenTelemetry](/integrations/opentelemetry) spans |
+| `mcp-server` | Serve tools over MCP stdio |
+| `mcp-http-server` | Serve tools over MCP Streamable HTTP |
+| `mcp-http-oauth` | HTTP MCP server protected with OAuth 2.1 + scopes |
+| `mcp-client` | Consume an external MCP server's tools |
+| `figma-mcp` | Consume the Figma MCP server |
+| `figma-design-to-code` | Turn a Figma design into code via MCP + a model |
+| `google-sheets-mcp-http` | Expose Google Sheets as an HTTP MCP server |
+
+## Codegraph
+
+| Script | What it shows |
+| --- | --- |
+| `codegraph` | Build a [code graph](/concepts/codegraph) and query it |
+| `codegraph-qa` | Codebase RAG: ranked retrieval → Claude |
+| `codegraph-mcp-http` | Serve a code graph as an HTTP MCP server |

@@ -1,0 +1,48 @@
+---
+title: "Context"
+description: "The immutable input to an execution run, carrying everything a tool needs"
+---
+
+Context is the immutable input to an execution run. It carries everything a tool
+might need about the surrounding application without coupling the tool to it:
+
+- `history` — conversation or event history
+- `documents` — retrieved documents (RAG)
+- `variables` — application state (tenant, locale, feature flags…)
+- `metadata` — including `auth`, the authenticated caller identity
+
+```ts
+import { createContext } from '@ai-application-toolkit/context'
+
+const context = createContext({
+  variables: { tenant: 'acme' },
+  metadata: { auth: { subject: 'user_123', scopes: ['search:read'] } }
+})
+```
+
+## Immutability
+
+`createContext` deep-freezes its data, so a run can never mutate the input it
+was given. Tools receive a read-only view as the second argument to `execute`
+(`context.data`). This makes runs reproducible and safe to share.
+
+## Merging
+
+Context is layered, not mutated. `merge` returns a **new** frozen context with
+`variables` and `metadata` shallow-merged on top:
+
+```ts
+const scoped = context.merge({ variables: { locale: 'zh-TW' } })
+// context is unchanged; scoped has both tenant and locale
+```
+
+The [Runtime](/concepts/runtime) uses this internally: a base `context` set on
+the runtime is merged with per-call `context` for each `executeTool`.
+
+## Where it comes from
+
+Build context outside the runtime and pass it in — either once on
+`createRuntime({ context })` or per call on `executeTool({ context })`. Transport
+boundaries (such as the [MCP HTTP server](/integrations/mcp)) populate
+`metadata.auth` from a verified token so [guardrails](/concepts/guardrail) can
+authorize per tool.

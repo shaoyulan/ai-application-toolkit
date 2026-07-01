@@ -1,0 +1,57 @@
+---
+title: "Vercel AI SDK"
+description: "Lets a model call your toolkit tools through the Vercel AI SDK"
+---
+
+This integration lets a model call your toolkit tools through the
+[Vercel AI SDK](https://sdk.vercel.ai). `toVercelTools` converts toolkit tools
+into an AI SDK `ToolSet`: each tool's JSON Schema becomes the AI SDK
+`inputSchema`, and `execute` runs through the toolkit [Runtime](/concepts/runtime)
+— so validation, guardrails, context, and tracing all apply during a model's
+tool call.
+
+```bash
+pnpm add @ai-application-toolkit/vercel-ai ai
+```
+
+## Usage
+
+```ts
+import { generateText } from 'ai'
+import { openai } from '@ai-sdk/openai'
+import { defineTool } from '@ai-application-toolkit/tool'
+import { toVercelTools } from '@ai-application-toolkit/vercel-ai'
+
+const add = defineTool({
+  id: 'add',
+  description: 'Add two numbers',
+  input: {
+    type: 'object',
+    properties: { a: { type: 'number' }, b: { type: 'number' } },
+    required: ['a', 'b'],
+    additionalProperties: false
+  },
+  execute: (input: { a: number; b: number }) => input.a + input.b
+})
+
+const result = await generateText({
+  model: openai('gpt-4o'),
+  prompt: 'What is 2 + 3?',
+  tools: toVercelTools([add])
+})
+```
+
+Works the same with `streamText`. Because the toolkit defines the tools, the same
+`add` can also be served over [MCP](/integrations/mcp) or run directly through
+the runtime — no rewrite.
+
+## Adding policy
+
+Pass `runtime` to apply guardrails, a base context, a trace sink, or a timeout to
+every tool call the model makes:
+
+```ts
+toVercelTools([add], { runtime: { guardrails: [myGuardrail], timeoutMs: 5000 } })
+```
+
+A runnable version lives in [`examples/vercel-ai-tools.ts`](/examples).

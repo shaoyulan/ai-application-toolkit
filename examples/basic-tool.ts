@@ -3,7 +3,12 @@ import { createRuntime } from '@ai-application-toolkit/runtime'
 
 const helloTool = defineTool({
   id: 'hello',
-  input: { name: 'string' },
+  input: {
+    type: 'object',
+    properties: { name: { type: 'string' } },
+    required: ['name'],
+    additionalProperties: false
+  },
   execute: async (input: { name: string }) => {
     return { message: `Hello, ${input.name}` }
   }

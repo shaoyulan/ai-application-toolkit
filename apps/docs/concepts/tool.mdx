@@ -1,0 +1,71 @@
+---
+title: "Tool"
+description: "A typed executable function described by a JSON Schema that serves as its contract"
+---
+
+A Tool is a typed executable function described by a JSON Schema. The schema is
+the contract: the [Runtime](/concepts/runtime) validates input against it before
+execution, and the same schema is exported to tool-calling APIs (Claude, the
+Vercel AI SDK, MCP) that expect an input schema.
+
+```ts
+import { defineTool } from '@ai-application-toolkit/tool'
+
+export const searchTool = defineTool({
+  id: 'search',
+  description: 'Search public documents',
+  input: {
+    type: 'object',
+    properties: { query: { type: 'string' } },
+    required: ['query'],
+    additionalProperties: false
+  },
+  execute: async (input: { query: string }) => {
+    return { results: [] }
+  }
+})
+```
+
+## Input schema
+
+`input` is a pragmatic subset of JSON Schema — `type`, `properties`, `required`,
+`items`, `enum`, and `additionalProperties` are enforced by the built-in
+validator. It is compatible with the shape MCP and most LLM tool-calling APIs
+expect, so one definition serves local execution, model tool-calls, and MCP.
+
+`input` is optional. A tool with no schema skips validation and runs as a plain
+function.
+
+## Execution context
+
+`execute` receives the validated input and, optionally, the immutable run
+context the runtime passes in — caller identity, variables, history, and a
+cancellation `signal`.
+
+```ts
+execute: (input, context) => {
+  const tenant = context?.data.variables?.tenant
+  if (context?.signal?.aborted) return
+  // ...
+}
+```
+
+## Registry
+
+`createToolRegistry` holds a set of tools and enforces unique ids — useful when
+assembling tools from several sources.
+
+```ts
+import { createToolRegistry } from '@ai-application-toolkit/tool'
+
+const registry = createToolRegistry([searchTool])
+registry.register(anotherTool) // throws if the id is already taken
+registry.get('search')
+registry.list()
+```
+
+## Rules
+
+- Tools must not depend on provider SDKs — they stay portable across models.
+- Declare an `input` schema so the runtime can validate before running.
+- Tools should be deterministic when possible.

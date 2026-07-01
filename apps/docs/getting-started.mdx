@@ -1,0 +1,84 @@
+---
+title: "Getting Started"
+description: "Define a tool and run it through the runtime in a few minutes"
+---
+
+The toolkit is a set of small, independent packages — install only what you
+need. To define and run a tool you need two.
+
+<Steps>
+  <Step title="Install the packages">
+    Every package is published under the `@ai-application-toolkit/*` scope and
+    ships as ESM with TypeScript types.
+
+    ```bash
+    pnpm add @ai-application-toolkit/tool @ai-application-toolkit/runtime
+    ```
+  </Step>
+
+  <Step title="Define your first tool">
+    A [Tool](/concepts/tool) is a typed, executable function described by a JSON
+    Schema. The schema lets the runtime validate input before your code runs,
+    and lets the same tool be handed to model providers and MCP unchanged.
+
+    ```ts
+    import { defineTool } from '@ai-application-toolkit/tool'
+
+    const hello = defineTool({
+      id: 'hello',
+      description: 'Greet someone by name',
+      input: {
+        type: 'object',
+        properties: { name: { type: 'string' } },
+        required: ['name'],
+        additionalProperties: false
+      },
+      execute: async (input: { name: string }) => {
+        return { message: `Hello, ${input.name}` }
+      }
+    })
+    ```
+  </Step>
+
+  <Step title="Run it through the runtime">
+    The [Runtime](/concepts/runtime) executes tools by id. It validates the
+    input against the schema, enforces timeouts, normalizes errors, and emits
+    trace events.
+
+    ```ts
+    import { createRuntime } from '@ai-application-toolkit/runtime'
+
+    const runtime = createRuntime({ tools: [hello] })
+
+    const result = await runtime.executeTool({
+      toolId: 'hello',
+      input: { name: 'AI Toolkit' }
+    })
+
+    console.log(result) // { message: 'Hello, AI Toolkit' }
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  If you pass input that doesn't match the schema (e.g. a missing `name`), the
+  runtime throws a `ToolkitError` with code `TOOL_INPUT_INVALID` before
+  `execute` is ever called.
+</Note>
+
+## Where to go next
+
+<CardGroup cols={2}>
+  <Card title="Add a model" icon="plug" href="/providers/anthropic">
+    Connect Claude or OpenAI with a provider adapter.
+  </Card>
+  <Card title="Let a model call your tools" icon="wrench" href="/integrations/vercel-ai">
+    Expose tools through the Vercel AI SDK or as an MCP server.
+  </Card>
+  <Card title="Add policy" icon="shield-halved" href="/concepts/guardrail">
+    Enforce rules with guardrails before any tool runs.
+  </Card>
+  <Card title="See it end to end" icon="code" href="/examples">
+    Browse the runnable examples.
+  </Card>
+</CardGroup>

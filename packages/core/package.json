@@ -1,9 +1,31 @@
 {
   "name": "@ai-application-toolkit/core",
   "version": "0.0.0",
-  "description": "AI Application Toolkit package",
+  "description": "Shared types and errors for the AI Application Toolkit.",
+  "license": "MIT",
+  "author": "Danny LAN <45042818+shaoyulan@users.noreply.github.com>",
+  "homepage": "https://github.com/shaoyulan/ai-application-toolkit/tree/main/packages/core#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shaoyulan/ai-application-toolkit.git",
+    "directory": "packages/core"
+  },
+  "bugs": {
+    "url": "https://github.com/shaoyulan/ai-application-toolkit/issues"
+  },
+  "keywords": [
+    "ai",
+    "llm",
+    "toolkit",
+    "anthropic",
+    "claude",
+    "types"
+  ],
   "type": "module",
   "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
   "files": [
     "dist"
   ],
@@ -17,7 +39,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "lint": "echo \"TODO: add eslint\"",
+    "lint": "eslint src",
     "clean": "rm -rf dist"
   },
   "dependencies": {},

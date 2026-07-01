@@ -1,0 +1,46 @@
+---
+title: "OpenAI"
+description: "Wraps the OpenAI API behind the same normalized generate method as the Anthropic adapter"
+---
+
+The OpenAI adapter wraps the OpenAI API behind the same normalized `generate`
+method as the [Anthropic adapter](/providers/anthropic), so models are
+interchangeable from your application's point of view.
+
+```bash
+pnpm add @ai-application-toolkit/openai openai
+```
+
+## Usage
+
+The API key is read from `OPENAI_API_KEY`. Unlike the Anthropic adapter, `model`
+is required.
+
+```ts
+import { createOpenAIAdapter } from '@ai-application-toolkit/openai'
+
+const openai = createOpenAIAdapter({ model: 'gpt-4o' })
+
+const result = await openai.generate({
+  system: 'You are a concise assistant.',
+  prompt: 'In one sentence, what is a composable AI toolkit?'
+})
+
+console.log(result.text)
+console.log(`[${result.model}] finish=${result.finishReason} tokens=${result.usage.outputTokens}`)
+```
+
+## Result shape
+
+```ts
+{
+  text: string
+  model: string
+  finishReason: string | null
+  usage: { inputTokens: number; outputTokens: number }
+}
+```
+
+The result mirrors the Anthropic adapter, except the stop signal is named
+`finishReason` to match OpenAI's terminology. A runnable version lives in
+[`examples/openai-adapter.ts`](/examples).

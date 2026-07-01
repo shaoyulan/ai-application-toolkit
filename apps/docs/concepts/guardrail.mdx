@@ -1,0 +1,56 @@
+---
+title: "Guardrail"
+description: "Policy that runs as middleware before every tool execution to allow or block the call"
+---
+
+A Guardrail is policy that runs as middleware before every tool execution. Each
+guardrail inspects the input — and the run context — and either allows the call
+or blocks it. The [Runtime](/concepts/runtime) runs all guardrails before a tool;
+any denial throws `GUARDRAIL_BLOCKED` and the tool never runs.
+
+```ts
+import { defineGuardrail } from '@ai-application-toolkit/guardrail'
+
+const noEmptyName = defineGuardrail<{ name: string }>({
+  id: 'no-empty-name',
+  check: (input) =>
+    input.name.trim().length > 0
+      ? { allowed: true }
+      : { allowed: false, reason: 'name must not be empty' }
+})
+
+createRuntime({ tools, guardrails: [noEmptyName] })
+```
+
+## Context-aware checks
+
+`check` receives a second argument with the target `toolId` and the immutable run
+context — so a guardrail can decide based on *which* tool is being called and
+*who* is calling it (`ctx.data.metadata.auth`), not just the raw input.
+
+```ts
+check: (input, ctx) => {
+  const caller = ctx?.data.metadata?.auth?.subject
+  return { allowed: caller !== undefined }
+}
+```
+
+## Scope-based authorization
+
+`defineScopeGuardrail` is a built-in guardrail for OAuth-style authorization: map
+each tool to the scopes it requires, and it checks them against the caller's
+scopes in `ctx.data.metadata.auth.scopes`. Tools with no entry are allowed.
+
+```ts
+import { defineScopeGuardrail } from '@ai-application-toolkit/guardrail'
+
+const authz = defineScopeGuardrail({
+  required: { 'delete-user': ['admin'] }
+})
+
+createRuntime({ tools, guardrails: [authz] })
+```
+
+This pairs with the [MCP HTTP server's](/integrations/mcp) bearer verifier, which
+populates `metadata.auth` from a verified JWT — so the same authorization works
+for local and remote callers.

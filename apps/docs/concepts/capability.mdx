@@ -1,0 +1,38 @@
+---
+title: "Capability"
+description: "Groups related tools under a single user-facing ability you reason about at the product level"
+---
+
+A Capability groups related tools under a single user-facing ability — "search",
+"calendar", "codegraph". It's the unit you reason about at the product level,
+while [Tools](/concepts/tool) stay the unit of execution.
+
+```ts
+import { defineCapability } from '@ai-application-toolkit/capability'
+
+const calendar = defineCapability({
+  id: 'calendar',
+  description: 'Read and create calendar events',
+  tools: [listEventsTool, createEventTool]
+})
+```
+
+## Assembling a runtime
+
+`collectCapabilityTools` flattens one or more capabilities into the flat tool
+list `createRuntime` expects. Because the runtime requires unique tool ids, it
+throws `CAPABILITY_TOOL_CONFLICT` if two capabilities expose the same id — so id
+clashes surface at startup, not at call time.
+
+```ts
+import { collectCapabilityTools } from '@ai-application-toolkit/capability'
+import { createRuntime } from '@ai-application-toolkit/runtime'
+
+const runtime = createRuntime({
+  tools: collectCapabilityTools([calendar, search])
+})
+```
+
+Capabilities are frozen on definition, so they're safe to share across runtimes
+and modules. Packages can ship their own — for example
+[`codegraph`](/concepts/codegraph) exposes `defineCodegraphCapability(graph)`.
