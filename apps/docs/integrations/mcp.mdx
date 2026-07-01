@@ -1,0 +1,104 @@
+---
+title: "MCP"
+description: "Connects the toolkit to the Model Context Protocol in both directions — serve and consume"
+---
+
+The MCP integration connects the toolkit to the [Model Context Protocol](https://modelcontextprotocol.io)
+in both directions: **serve** your tools to MCP clients (over stdio or HTTP), or
+**consume** any external MCP server's tools as toolkit tools. Either way, calls
+run through the toolkit [Runtime](/concepts/runtime), so validation, guardrails,
+context, and tracing all apply.
+
+```bash
+pnpm add @ai-application-toolkit/mcp @modelcontextprotocol/sdk
+```
+
+## Serve tools over stdio
+
+Each tool's JSON Schema is forwarded as the MCP `inputSchema`, and `tools/call`
+runs through the runtime.
+
+```ts
+import { startStdioMcpServer } from '@ai-application-toolkit/mcp'
+
+await startStdioMcpServer({ name: 'my-tools', version: '1.0.0', tools: [add] })
+```
+
+Use `createMcpServer(...)` to attach a transport yourself, and pass `runtime` to
+add guardrails, a base context, a trace sink, or a timeout:
+
+```ts
+const server = createMcpServer({
+  name: 'my-tools',
+  version: '1.0.0',
+  tools: [add],
+  runtime: { guardrails: [myGuardrail], timeoutMs: 5000 }
+})
+```
+
+## Serve over HTTP
+
+`startHttpMcpServer` serves the same tools over the MCP Streamable HTTP
+transport. It is **stateless by default**, so it scales horizontally behind a
+load balancer. `createHttpMcpHandler` returns a framework-agnostic Node
+`(req, res)` handler you can mount anywhere.
+
+```ts
+import { startHttpMcpServer } from '@ai-application-toolkit/mcp'
+
+await startHttpMcpServer({ name: 'my-tools', version: '1.0.0', tools: [add], port: 3000 })
+// Point a Streamable HTTP MCP client at http://localhost:3000/mcp
+```
+
+## Protect it with OAuth 2.1 + scopes
+
+Verify a bearer JWT at the transport boundary with `createBearerVerifier`
+(JWKS), then authorize per tool with [`defineScopeGuardrail`](/concepts/guardrail).
+The verified caller is placed on `context.metadata.auth`, where the scope
+guardrail reads it.
+
+```ts
+import { startHttpMcpServer, createBearerVerifier } from '@ai-application-toolkit/mcp'
+import { defineScopeGuardrail } from '@ai-application-toolkit/guardrail'
+
+await startHttpMcpServer({
+  name: 'my-tools',
+  version: '1.0.0',
+  tools: [add],
+  port: 3000,
+  authenticate: createBearerVerifier({
+    jwksUri: 'https://issuer.example.com/.well-known/jwks.json',
+    issuer: 'https://issuer.example.com/',
+    audience: 'https://my-mcp-server.example.com'
+  }),
+  resourceMetadataUrl: 'https://my-mcp-server.example.com/.well-known/oauth-protected-resource',
+  runtime: { guardrails: [defineScopeGuardrail({ required: { add: ['calc:write'] } })] }
+})
+```
+
+Unauthenticated requests get `401` with a `WWW-Authenticate` challenge; callers
+missing a required scope get the usual `GUARDRAIL_BLOCKED` error.
+
+## Consume an external MCP server
+
+`connectMcpClient` connects to any MCP server and wraps its tools as toolkit
+tools, so they pick up the same validation, guardrails, timeout, and tracing as
+local tools.
+
+```ts
+import { connectMcpClient } from '@ai-application-toolkit/mcp'
+import { createRuntime } from '@ai-application-toolkit/runtime'
+
+const remote = await connectMcpClient({
+  transport: { kind: 'stdio', command: 'some-mcp-server' }, // or { kind: 'http', url }
+  toolIdPrefix: 'remote.'
+})
+
+const runtime = createRuntime({ tools: remote.tools, guardrails: [myGuardrail] })
+await runtime.executeTool({ toolId: 'remote.search', input: { q: 'hello' } })
+
+await remote.close()
+```
+
+Runnable examples: [`mcp-server.ts`, `mcp-http-server.ts`, `mcp-http-oauth.ts`,
+and `mcp-client.ts`](/examples).

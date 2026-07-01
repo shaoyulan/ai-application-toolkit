@@ -1,0 +1,60 @@
+---
+title: "Anthropic (Claude)"
+description: "A thin, normalized wrapper over the Claude API exposing a provider-agnostic generate method"
+---
+
+The Anthropic adapter is a thin, normalized wrapper over the Claude API. It gives
+you a provider-agnostic `generate` method so the rest of your application never
+imports a vendor SDK directly.
+
+```bash
+pnpm add @ai-application-toolkit/anthropic
+```
+
+## Usage
+
+The API key is read from `ANTHROPIC_API_KEY` (or passed explicitly). The model
+defaults to the most capable Claude model.
+
+```ts
+import { createAnthropicAdapter } from '@ai-application-toolkit/anthropic'
+
+const claude = createAnthropicAdapter() // model: claude-opus-4-8 by default
+
+const result = await claude.generate({
+  system: 'You are a concise assistant.',
+  prompt: 'In one sentence, what is a composable AI toolkit?'
+})
+
+console.log(result.text)
+console.log(`[${result.model}] stop=${result.stopReason} tokens=${result.usage.outputTokens}`)
+```
+
+## Options
+
+| Option | Default | Notes |
+| --- | --- | --- |
+| `apiKey` | `ANTHROPIC_API_KEY` env | Required (env or option) |
+| `model` | `claude-opus-4-8` | Any Claude model id |
+| `maxTokens` | `16000` | Default `max_tokens` per call |
+| `client` | — | Inject a pre-built client (e.g. a fake in tests) |
+
+## Result shape
+
+`generate` returns a normalized `GenerateResult`:
+
+```ts
+{
+  text: string
+  model: string
+  stopReason: string | null
+  usage: { inputTokens: number; outputTokens: number }
+}
+```
+
+`generate` takes `{ prompt, system?, maxTokens? }`; `maxTokens` overrides the
+adapter default for a single call. The same `generate` shape is implemented by
+the [OpenAI adapter](/providers/openai), so you can swap providers without
+touching call sites.
+
+A runnable version lives in [`examples/anthropic-adapter.ts`](/examples).

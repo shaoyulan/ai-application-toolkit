@@ -1,9 +1,32 @@
 {
   "name": "@ai-application-toolkit/runtime",
   "version": "0.0.0",
-  "description": "AI Application Toolkit package",
+  "description": "Tool execution runtime with guardrails, context and tracing.",
+  "license": "MIT",
+  "author": "Danny LAN <45042818+shaoyulan@users.noreply.github.com>",
+  "homepage": "https://github.com/shaoyulan/ai-application-toolkit/tree/main/packages/runtime#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shaoyulan/ai-application-toolkit.git",
+    "directory": "packages/runtime"
+  },
+  "bugs": {
+    "url": "https://github.com/shaoyulan/ai-application-toolkit/issues"
+  },
+  "keywords": [
+    "ai",
+    "llm",
+    "toolkit",
+    "anthropic",
+    "claude",
+    "runtime",
+    "agents"
+  ],
   "type": "module",
   "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
   "files": [
     "dist"
   ],
@@ -17,11 +40,13 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "lint": "echo \"TODO: add eslint\"",
+    "lint": "eslint src",
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@ai-application-toolkit/context": "workspace:*",
     "@ai-application-toolkit/core": "workspace:*",
+    "@ai-application-toolkit/guardrail": "workspace:*",
     "@ai-application-toolkit/tool": "workspace:*",
     "@ai-application-toolkit/trace": "workspace:*"
   },

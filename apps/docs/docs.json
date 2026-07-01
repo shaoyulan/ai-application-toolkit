@@ -1,0 +1,61 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "AI Application Toolkit",
+  "description": "Composable, provider-agnostic toolkit for building AI applications.",
+  "colors": {
+    "primary": "#7C3AED",
+    "light": "#A78BFA",
+    "dark": "#7C3AED"
+  },
+  "favicon": "/favicon.svg",
+  "navigation": {
+    "groups": [
+      {
+        "group": "Overview",
+        "pages": ["index", "getting-started", "vision", "architecture"]
+      },
+      {
+        "group": "Concepts",
+        "pages": [
+          "concepts/tool",
+          "concepts/runtime",
+          "concepts/context",
+          "concepts/capability",
+          "concepts/workflow",
+          "concepts/guardrail",
+          "concepts/trace",
+          "concepts/cache",
+          "concepts/codegraph"
+        ]
+      },
+      {
+        "group": "Providers",
+        "pages": ["providers/anthropic", "providers/openai"]
+      },
+      {
+        "group": "Integrations",
+        "pages": [
+          "integrations/mcp",
+          "integrations/vercel-ai",
+          "integrations/opentelemetry"
+        ]
+      },
+      {
+        "group": "Examples",
+        "pages": ["examples"]
+      }
+    ]
+  },
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/shaoyulan/ai-application-toolkit"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/shaoyulan/ai-application-toolkit"
+    }
+  }
+}

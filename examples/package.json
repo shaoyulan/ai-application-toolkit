@@ -1,0 +1,44 @@
+{
+  "name": "@ai-application-toolkit/examples",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Runnable examples for the AI Application Toolkit.",
+  "scripts": {
+    "basic-tool": "tsx basic-tool.ts",
+    "guarded-runtime": "tsx guarded-runtime.ts",
+    "anthropic-adapter": "tsx anthropic-adapter.ts",
+    "openai-adapter": "tsx openai-adapter.ts",
+    "vercel-ai-tools": "tsx vercel-ai-tools.ts",
+    "mcp-server": "tsx mcp-server.ts",
+    "mcp-http-server": "tsx mcp-http-server.ts",
+    "mcp-http-oauth": "tsx mcp-http-oauth.ts",
+    "mcp-client": "tsx mcp-client.ts",
+    "figma-mcp": "tsx figma-mcp.ts",
+    "figma-design-to-code": "tsx figma-design-to-code.ts",
+    "codegraph": "tsx codegraph.ts",
+    "codegraph-qa": "tsx codegraph-qa.ts",
+    "codegraph-mcp-http": "tsx codegraph-mcp-http.ts",
+    "google-sheets-mcp-http": "tsx google-sheets-mcp-http.ts",
+    "otel-trace": "tsx otel-trace.ts"
+  },
+  "dependencies": {
+    "@ai-application-toolkit/anthropic": "workspace:*",
+    "@ai-application-toolkit/capability": "workspace:*",
+    "@ai-application-toolkit/codegraph": "workspace:*",
+    "@ai-application-toolkit/guardrail": "workspace:*",
+    "@ai-application-toolkit/mcp": "workspace:*",
+    "@ai-application-toolkit/openai": "workspace:*",
+    "@ai-application-toolkit/otel": "workspace:*",
+    "@ai-application-toolkit/runtime": "workspace:*",
+    "@ai-application-toolkit/tool": "workspace:*",
+    "@ai-application-toolkit/trace": "workspace:*",
+    "@ai-application-toolkit/vercel-ai": "workspace:*",
+    "@opentelemetry/sdk-trace-base": "^1.30.1",
+    "googleapis": "^144.0.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "untun": "^0.1.3"
+  }
+}

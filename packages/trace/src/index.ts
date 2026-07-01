@@ -5,6 +5,7 @@ export type TraceEventType =
   | 'tool:end'
   | 'tool:error'
   | 'runtime:error'
+  | 'guardrail:blocked'
 
 export interface TraceEvent {
   type: TraceEventType

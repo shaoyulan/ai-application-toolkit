@@ -1,6 +1,15 @@
+import { ToolkitError } from '@ai-application-toolkit/core'
+
+export interface WorkflowStepContext {
+  /** Result of the immediately preceding step (undefined for the first step). */
+  previous: unknown
+  /** Results of all preceding steps, in order. */
+  results: readonly unknown[]
+}
+
 export interface WorkflowStep {
   id: string
-  run: () => Promise<unknown>
+  run: (context: WorkflowStepContext) => Promise<unknown> | unknown
 }
 
 export interface Workflow {
@@ -11,10 +20,10 @@ export interface Workflow {
 export function createWorkflow(id: string) {
   const steps: WorkflowStep[] = []
 
-  return {
+  const builder = {
     step(step: WorkflowStep) {
       steps.push(step)
-      return this
+      return builder
     },
     build(): Workflow {
       return Object.freeze({
@@ -23,13 +32,27 @@ export function createWorkflow(id: string) {
       })
     }
   }
+
+  return builder
 }
 
-export async function runWorkflow(workflow: Workflow) {
+export async function runWorkflow(workflow: Workflow): Promise<unknown[]> {
   const results: unknown[] = []
 
   for (const step of workflow.steps) {
-    results.push(await step.run())
+    try {
+      const result = await step.run({
+        previous: results[results.length - 1],
+        results: [...results]
+      })
+      results.push(result)
+    } catch (cause) {
+      throw new ToolkitError({
+        code: 'WORKFLOW_STEP_FAILED',
+        message: `Workflow step failed: ${workflow.id} -> ${step.id}`,
+        cause
+      })
+    }
   }
 
   return results

@@ -1,0 +1,71 @@
+---
+title: "Codegraph"
+description: "Turns a folder of source code into a queryable multi-language code graph for LLM retrieval"
+---
+
+Codegraph turns a folder of source code into a queryable, multi-language **code
+graph** — files, symbols, imports, and references — built with tree-sitter. On
+top of the graph it runs PageRank to surface the most relevant code for a given
+focus, which makes it a retrieval engine for feeding the right context to an LLM.
+
+```bash
+pnpm add @ai-application-toolkit/codegraph
+```
+
+Grammars ship as WebAssembly, so there's no native build step. Supported
+languages: TypeScript/TSX, JavaScript/JSX, Python, Go, C#, Java, and Rust.
+
+## Build and query
+
+```ts
+import { buildCodeGraph } from '@ai-application-toolkit/codegraph'
+
+const graph = await buildCodeGraph({ dir: './src' })
+
+graph.findDefinition('buildCodeGraph') // where is it declared?
+graph.findReferences('CodeGraph')      // who uses it?
+graph.fileSummary('src/build.ts')      // symbols + imported files
+graph.rankedContext({ seeds: ['parseFile'], limit: 15 }) // ranked context for an LLM
+```
+
+`rankedContext` runs personalized PageRank from your `seeds` over the
+import/reference graph — "what matters around what I'm editing?" — and is the
+basis for codebase RAG.
+
+## As tools and over MCP
+
+The graph exposes itself as a [Capability](/concepts/capability), so its query
+methods become toolkit tools you can run through the runtime or serve over
+[MCP](/integrations/mcp):
+
+```ts
+import { buildCodeGraph, defineCodegraphCapability } from '@ai-application-toolkit/codegraph'
+import { collectCapabilityTools } from '@ai-application-toolkit/capability'
+import { createRuntime } from '@ai-application-toolkit/runtime'
+
+const graph = await buildCodeGraph({ dir: './src' })
+const runtime = createRuntime({
+  tools: collectCapabilityTools([defineCodegraphCapability(graph)])
+})
+// Tools: codegraph_search_symbols, codegraph_find_definition,
+//        codegraph_find_references, codegraph_neighbors,
+//        codegraph_file_summary, codegraph_relevant_context
+```
+
+## CLI
+
+No install needed — run it with `npx`:
+
+```bash
+# Build a graph and print a summary + the top-ranked symbols
+npx @ai-application-toolkit/codegraph build ./src
+
+# Dump the full graph as JSON
+npx @ai-application-toolkit/codegraph build ./src --json > graph.json
+
+# Serve the graph as an MCP server, optionally behind a public tunnel
+npx @ai-application-toolkit/codegraph serve ./src --port 3000 --tunnel
+```
+
+Runnable examples: [`codegraph.ts`](/examples), [`codegraph-qa.ts`](/examples)
+(retrieval → Claude), and [`codegraph-mcp-http.ts`](/examples).

@@ -1,0 +1,62 @@
+---
+title: "Runtime"
+description: "The single, safe entry point for executing tools by id"
+---
+
+The Runtime is the single, safe entry point for executing tools. You register
+tools (and optionally guardrails, a base context, a trace sink, and a default
+timeout) once, then call `executeTool` by id.
+
+```ts
+import { createRuntime } from '@ai-application-toolkit/runtime'
+
+const runtime = createRuntime({
+  tools: [searchTool],
+  guardrails: [myGuardrail],
+  context: { variables: { tenant: 'acme' } },
+  timeoutMs: 10_000,
+  trace: myTraceSink
+})
+
+const result = await runtime.executeTool({
+  toolId: 'search',
+  input: { query: 'composable AI' }
+})
+```
+
+## What a run does
+
+For every `executeTool` call, the runtime, in order:
+
+1. Merges any per-call `context` onto the base context and freezes it.
+2. Looks up the tool — unknown id throws `TOOL_NOT_FOUND`.
+3. Validates `input` against the tool's JSON Schema — a mismatch throws
+   `TOOL_INPUT_INVALID` before `execute` runs.
+4. Runs every [guardrail](/concepts/guardrail) — a denial throws `GUARDRAIL_BLOCKED`.
+5. Executes the tool under a timeout and the caller's cancellation `signal`.
+6. Emits [trace events](/concepts/trace) at each step.
+
+## Cancellation and timeouts
+
+Pass `timeoutMs` on the runtime (default for all tools) or per call (overrides
+the default). You can also pass an `AbortSignal` to cancel cooperatively:
+
+```ts
+await runtime.executeTool({
+  toolId: 'search',
+  input: { query: 'x' },
+  timeoutMs: 2_000,
+  signal: controller.signal
+})
+```
+
+A timeout throws `TOOL_TIMEOUT`; an external abort throws `TOOL_ABORTED`. The
+same signal is handed to the tool's `execute` so long-running tools can stop
+early.
+
+## Errors
+
+Every failure surfaces as a `ToolkitError` with a stable `code`:
+`TOOL_NOT_FOUND`, `TOOL_INPUT_INVALID`, `GUARDRAIL_BLOCKED`, `TOOL_TIMEOUT`,
+`TOOL_ABORTED`, or `TOOL_EXECUTION_FAILED` (which wraps the original error as
+`cause`).

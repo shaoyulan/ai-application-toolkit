@@ -1,5 +1,0 @@
-{
-  "framework": "nuxtjs",
-  "buildCommand": "cd ../.. && pnpm --filter @ai-application-toolkit/docs build",
-  "installCommand": "cd ../.. && pnpm install --frozen-lockfile"
-}

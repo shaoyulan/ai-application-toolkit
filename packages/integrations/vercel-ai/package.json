@@ -1,9 +1,31 @@
 {
   "name": "@ai-application-toolkit/vercel-ai",
   "version": "0.0.0",
-  "description": "AI Application Toolkit package",
+  "description": "Use AI Application Toolkit tools with the Vercel AI SDK.",
+  "license": "MIT",
+  "author": "Danny LAN <45042818+shaoyulan@users.noreply.github.com>",
+  "homepage": "https://github.com/shaoyulan/ai-application-toolkit/tree/main/packages/integrations/vercel-ai#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shaoyulan/ai-application-toolkit.git",
+    "directory": "packages/integrations/vercel-ai"
+  },
+  "bugs": {
+    "url": "https://github.com/shaoyulan/ai-application-toolkit/issues"
+  },
+  "keywords": [
+    "ai",
+    "llm",
+    "toolkit",
+    "anthropic",
+    "claude",
+    "vercel-ai"
+  ],
   "type": "module",
   "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
   "files": [
     "dist"
   ],
@@ -17,11 +39,17 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "lint": "echo \"TODO: add eslint\"",
+    "lint": "eslint src",
     "clean": "rm -rf dist"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@ai-application-toolkit/core": "workspace:*",
+    "@ai-application-toolkit/runtime": "workspace:*",
+    "@ai-application-toolkit/tool": "workspace:*",
+    "ai": "^7.0.7"
+  },
   "devDependencies": {
+    "@ai-application-toolkit/guardrail": "workspace:*",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   },

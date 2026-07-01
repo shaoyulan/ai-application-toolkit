@@ -1,0 +1,48 @@
+---
+title: "Trace"
+description: "The observability layer that emits a structured event at every step of a run"
+---
+
+Trace is the observability layer. The [Runtime](/concepts/runtime) emits a
+structured event at every step of a run — start, validation, guardrails, tool
+execution, end — to whatever `TraceSink` you provide. This is how you get
+logging, metrics, and debugging without instrumenting each tool.
+
+```ts
+import { createMemoryTraceSink } from '@ai-application-toolkit/trace'
+
+const trace = createMemoryTraceSink()
+const runtime = createRuntime({ tools, trace })
+
+await runtime.executeTool({ toolId: 'hello', input: { name: 'Ada' } })
+
+console.log(trace.events.map((e) => e.type).join(' -> '))
+// runtime:start -> tool:start -> tool:end -> runtime:end
+```
+
+## Event types
+
+Every event has a `type`, a `timestamp`, the `runId`, and optional `data`:
+
+| Type | When |
+| --- | --- |
+| `runtime:start` | A run begins |
+| `tool:start` / `tool:end` | The tool's `execute` starts / succeeds |
+| `tool:error` | The tool threw |
+| `guardrail:blocked` | A guardrail denied the call |
+| `runtime:error` | The run failed (carries a `code`) |
+| `runtime:end` | A run completed successfully |
+
+## Custom sinks
+
+A `TraceSink` is just `{ emit(event) }`. Forward events to your logger, an OpenTelemetry
+exporter, or a metrics pipeline:
+
+```ts
+const trace = {
+  emit: (event) => logger.info(event.type, { runId: event.runId, ...event.data })
+}
+```
+
+`createMemoryTraceSink` keeps events in an array and is ideal for tests and local
+debugging.

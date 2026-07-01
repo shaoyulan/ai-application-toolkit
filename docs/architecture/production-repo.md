@@ -3,7 +3,7 @@
 ## Goals
 
 - publish composable npm packages
-- host documentation on Vercel using Nuxt
+- host documentation on Mintlify (MDX + `docs.json`)
 - support AI agent development through AGENTS.md
 - preserve strict package boundaries
 

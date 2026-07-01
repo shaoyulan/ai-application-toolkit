@@ -1,0 +1,39 @@
+---
+title: "AI Application Toolkit"
+description: "Composable, provider-agnostic infrastructure for building AI applications"
+---
+
+Build AI applications from small, composable primitives instead of a monolithic
+agent framework. Every package is independently installable, provider-agnostic,
+and tool-first.
+
+<CardGroup cols={2}>
+  <Card title="Getting Started" icon="rocket" href="/getting-started">
+    Define a tool and run it through the runtime in a few minutes.
+  </Card>
+  <Card title="Concepts" icon="cube" href="/concepts/tool">
+    Tool, Runtime, Context, Capability, Workflow, Guardrail, Trace, Cache, Codegraph.
+  </Card>
+  <Card title="Providers" icon="plug" href="/providers/anthropic">
+    Connect Claude or OpenAI behind one normalized adapter.
+  </Card>
+  <Card title="Integrations" icon="puzzle-piece" href="/integrations/mcp">
+    Serve tools over MCP, the Vercel AI SDK, or OpenTelemetry.
+  </Card>
+</CardGroup>
+
+## What this project provides
+
+- Tool definition standard
+- Runtime execution layer
+- Context abstraction
+- Capability routing
+- Workflow orchestration
+- Provider adapters
+- Guardrail middleware
+- Trace events and OpenTelemetry export
+
+## First principles
+
+AI application complexity comes from integration, not from calling a model.
+This toolkit standardizes the integration layer.

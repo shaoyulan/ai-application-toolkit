@@ -3,21 +3,15 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "nuxt dev",
-    "build": "nuxt build",
-    "generate": "nuxt generate",
-    "preview": "nuxt preview",
-    "typecheck": "nuxt typecheck",
-    "lint": "echo \"TODO: add eslint\"",
-    "test": "echo \"docs has no tests yet\"",
-    "clean": "rm -rf .nuxt .output"
-  },
-  "dependencies": {
-    "@nuxt/content": "^3.0.0",
-    "nuxt": "^3.15.0",
-    "vue": "^3.5.13"
+    "dev": "mint dev",
+    "check": "mint broken-links",
+    "build": "echo \"docs are built and hosted by Mintlify\"",
+    "typecheck": "echo \"docs has no typecheck\"",
+    "lint": "echo \"docs are validated by Mintlify\"",
+    "test": "echo \"docs has no tests\"",
+    "clean": "rm -rf .mint"
   },
   "devDependencies": {
-    "typescript": "^5.7.2"
+    "mint": "^4.2.651"
   }
 }

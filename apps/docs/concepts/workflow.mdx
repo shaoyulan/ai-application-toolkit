@@ -1,0 +1,48 @@
+---
+title: "Workflow"
+description: "Coordinates multi-step execution where each step can see the results before it"
+---
+
+A Workflow coordinates multi-step execution: an ordered list of steps where each
+step can see the results of the steps before it. Use it to sequence tool calls,
+model calls, and plain logic into a repeatable pipeline.
+
+```ts
+import { createWorkflow, runWorkflow } from '@ai-application-toolkit/workflow'
+
+const pipeline = createWorkflow('summarize-search')
+  .step({
+    id: 'search',
+    run: () => runtime.executeTool({ toolId: 'search', input: { query: 'AI' } })
+  })
+  .step({
+    id: 'summarize',
+    run: ({ previous }) => anthropic.generate({
+      prompt: `Summarize: ${JSON.stringify(previous)}`
+    })
+  })
+  .build()
+
+const results = await runWorkflow(pipeline)
+// results[0] = search output, results[1] = summary
+```
+
+## Step context
+
+Each step's `run` receives:
+
+- `previous` — the result of the immediately preceding step (`undefined` for the
+  first step)
+- `results` — all preceding results, in order
+
+`runWorkflow` returns the array of every step's result.
+
+## Errors
+
+If a step throws, `runWorkflow` stops and throws a `ToolkitError` with code
+`WORKFLOW_STEP_FAILED`, identifying the workflow and step and wrapping the
+original error as `cause`. Steps run sequentially — later steps never run after
+a failure.
+
+The workflow is a thin, explicit orchestrator: there is no hidden control flow,
+retries, or branching. Compose those in your step functions when you need them.
