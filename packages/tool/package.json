@@ -1,6 +1,6 @@
 {
   "name": "@ai-application-toolkit/tool",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Composable tool definitions and registry for the AI Application Toolkit.",
   "license": "MIT",
   "author": "Danny LAN <45042818+shaoyulan@users.noreply.github.com>",

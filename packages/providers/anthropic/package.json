@@ -1,6 +1,6 @@
 {
   "name": "@ai-application-toolkit/anthropic",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Anthropic (Claude) provider adapter for the AI Application Toolkit.",
   "license": "MIT",
   "author": "Danny LAN <45042818+shaoyulan@users.noreply.github.com>",

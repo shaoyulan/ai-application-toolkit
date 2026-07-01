@@ -1,6 +1,6 @@
 {
   "name": "@ai-application-toolkit/otel",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "OpenTelemetry trace sink for the AI Application Toolkit — emit runtime execution as OTel spans.",
   "license": "MIT",
   "author": "Danny LAN <45042818+shaoyulan@users.noreply.github.com>",

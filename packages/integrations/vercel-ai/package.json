@@ -1,6 +1,6 @@
 {
   "name": "@ai-application-toolkit/vercel-ai",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Use AI Application Toolkit tools with the Vercel AI SDK.",
   "license": "MIT",
   "author": "Danny LAN <45042818+shaoyulan@users.noreply.github.com>",

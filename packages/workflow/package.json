@@ -1,6 +1,6 @@
 {
   "name": "@ai-application-toolkit/workflow",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Sequential workflow orchestration for the AI Application Toolkit.",
   "license": "MIT",
   "author": "Danny LAN <45042818+shaoyulan@users.noreply.github.com>",
