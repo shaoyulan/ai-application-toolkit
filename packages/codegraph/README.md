@@ -46,8 +46,8 @@ npx @ai-application-toolkit/codegraph list --global  # every global-cache index
 
 # Serve the graph as an MCP server over HTTP …
 # (omit --port to auto-select a free port from 3000; a busy --port falls back to the next free one)
-# serve loads the persistent index and watches for changes, hot-swapping the
-# graph on edits — pass --no-watch to disable.
+# serve starts instantly from the persistent index, refreshes in the background,
+# and watches for changes — hot-swapping the graph on edits (--no-watch to disable).
 npx @ai-application-toolkit/codegraph serve ./src --port 3000
 
 # … and publish a public URL via untun (Cloudflare quick tunnel)
@@ -62,8 +62,10 @@ its license, so run it in an interactive terminal.
 ### Persistent index
 
 `index`, `sync` and `serve` keep a SQLite index that caches per-file parse
-results keyed by content hash, so only changed files are re-parsed (a warm
-rebuild is near-instant).
+results, so only changed files are re-parsed — unchanged files are skipped by an
+mtime/size check without even being read, making a warm rebuild near-instant.
+`index` builds or updates the index; `sync` updates an existing one (and errors
+if there is none); `build` is a one-shot in-memory scan that uses no index.
 
 **No install needed on modern Node.** The SQLite backend is chosen at runtime:
 
