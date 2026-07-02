@@ -38,20 +38,30 @@ interface SqlDb {
 /** Backend id, for observability. */
 export type SqliteDriver = 'better-sqlite3' | 'node:sqlite'
 
-function openBetterSqlite(path: string): SqlDb {
-  const Database = require('better-sqlite3') as new (p: string) => {
+/** A function that opens a DB file, or `undefined` if the driver isn't installed. */
+type DriverLoader = ((path: string) => SqlDb) | undefined
+
+function betterSqliteLoader(): DriverLoader {
+  let Database: new (p: string) => {
     exec(sql: string): unknown
     prepare(sql: string): SqlStatement
     transaction<T extends (...a: never[]) => unknown>(fn: T): T
     close(): void
   }
-  const db = new Database(path)
-  db.exec('PRAGMA journal_mode = WAL')
-  return {
-    exec: (sql) => void db.exec(sql),
-    prepare: (sql) => db.prepare(sql),
-    transaction: (fn) => db.transaction(fn as never) as never,
-    close: () => db.close()
+  try {
+    Database = require('better-sqlite3')
+  } catch {
+    return undefined // not installed
+  }
+  return (path) => {
+    const db = new Database(path)
+    db.exec('PRAGMA journal_mode = WAL')
+    return {
+      exec: (sql) => void db.exec(sql),
+      prepare: (sql) => db.prepare(sql),
+      transaction: (fn) => db.transaction(fn as never) as never,
+      close: () => db.close()
+    }
   }
 }
 
@@ -68,34 +78,39 @@ function suppressSqliteExperimentalWarning(): void {
   }) as typeof process.emitWarning
 }
 
-function openNodeSqlite(path: string): SqlDb {
-  suppressSqliteExperimentalWarning()
-  const { DatabaseSync } = require('node:sqlite') as {
-    DatabaseSync: new (p: string) => {
-      exec(sql: string): unknown
-      prepare(sql: string): SqlStatement
-      close(): void
-    }
+function nodeSqliteLoader(): DriverLoader {
+  let DatabaseSync: new (p: string) => {
+    exec(sql: string): unknown
+    prepare(sql: string): SqlStatement
+    close(): void
   }
-  const db = new DatabaseSync(path)
-  db.exec('PRAGMA journal_mode = WAL')
-  const exec = (sql: string) => void db.exec(sql)
-  return {
-    exec,
-    prepare: (sql) => db.prepare(sql),
-    transaction:
-      (fn) =>
-      (...args) => {
-        exec('BEGIN')
-        try {
-          fn(...args)
-          exec('COMMIT')
-        } catch (error) {
-          exec('ROLLBACK')
-          throw error
-        }
-      },
-    close: () => db.close()
+  try {
+    suppressSqliteExperimentalWarning()
+    ;({ DatabaseSync } = require('node:sqlite'))
+  } catch {
+    return undefined // built-in not available (Node < 23.4, or flag required)
+  }
+  return (path) => {
+    const db = new DatabaseSync(path)
+    const exec = (sql: string) => void db.exec(sql)
+    exec('PRAGMA journal_mode = WAL')
+    return {
+      exec,
+      prepare: (sql) => db.prepare(sql),
+      transaction:
+        (fn) =>
+        (...args) => {
+          exec('BEGIN')
+          try {
+            fn(...args)
+            exec('COMMIT')
+          } catch (error) {
+            exec('ROLLBACK')
+            throw error
+          }
+        },
+      close: () => db.close()
+    }
   }
 }
 
@@ -103,31 +118,35 @@ function openNodeSqlite(path: string): SqlDb {
  * Open a SQLite database, preferring an installed better-sqlite3 over the
  * built-in node:sqlite. Set `CODEGRAPH_SQLITE_DRIVER=node` to force the built-in
  * (skip the native module) or `=better` to require better-sqlite3.
+ *
+ * Distinguishes "no driver installed" from "driver works but this file can't be
+ * opened" (a non-SQLite or corrupt file), so each gets an actionable message.
  */
 function openDb(path: string): { db: SqlDb; driver: SqliteDriver } {
   const forced = process.env.CODEGRAPH_SQLITE_DRIVER
-  if (forced !== 'node') {
-    try {
-      return { db: openBetterSqlite(path), driver: 'better-sqlite3' }
-    } catch (cause) {
-      if (forced === 'better') throw sqliteUnavailable(cause)
-      // Not installed — fall through to the built-in driver.
-    }
+  const candidates: { driver: SqliteDriver; load: DriverLoader }[] = [
+    { driver: 'better-sqlite3', load: forced === 'node' ? undefined : betterSqliteLoader() },
+    { driver: 'node:sqlite', load: forced === 'better' ? undefined : nodeSqliteLoader() }
+  ]
+  const chosen = candidates.find((c) => c.load)
+  if (!chosen) {
+    throw new ToolkitError({
+      code: 'CODEGRAPH_SQLITE_NOT_AVAILABLE',
+      message:
+        'Persistent indexing needs Node >= 23.4 (built-in node:sqlite) or the optional dependency "better-sqlite3" (npm i better-sqlite3).'
+    })
   }
   try {
-    return { db: openNodeSqlite(path), driver: 'node:sqlite' }
+    return { db: chosen.load!(path), driver: chosen.driver }
   } catch (cause) {
-    throw sqliteUnavailable(cause)
+    throw new ToolkitError({
+      code: 'CODEGRAPH_INDEX_UNREADABLE',
+      message:
+        `Could not open the index at "${path}" — it may not be a codegraph index or may be corrupt. ` +
+        'Rebuild it with --force, or point --index at a different path.',
+      cause
+    })
   }
-}
-
-function sqliteUnavailable(cause: unknown): ToolkitError {
-  return new ToolkitError({
-    code: 'CODEGRAPH_SQLITE_NOT_AVAILABLE',
-    message:
-      'Persistent indexing needs Node >= 23.4 (built-in node:sqlite) or the optional dependency "better-sqlite3" (npm i better-sqlite3).',
-    cause
-  })
 }
 
 const SCHEMA = `

@@ -224,8 +224,9 @@ async function cmdServe(dir: string, flags: Flags): Promise<void> {
   let store: GraphStore | undefined
   try {
     store = openSqliteStore(resolveIndexPath(dir, flags))
-  } catch {
-    console.warn('No SQLite backend available — serving from an in-memory build (no incremental cache).')
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    console.warn(`${reason}\nServing from an in-memory build (no incremental cache).`)
   }
 
   const options: BuildCodeGraphOptions = { ...buildOptions(dir, flags), ...(store ? { store } : {}) }

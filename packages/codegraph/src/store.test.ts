@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -131,3 +131,19 @@ for (const driver of DRIVERS) {
     })
   })
 }
+
+describe('openSqliteStore error handling', () => {
+  let dir: string
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'cg-store-err-'))
+  })
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('gives an actionable error when the file is not a SQLite database', async () => {
+    const path = join(dir, 'notadb.db')
+    await writeFile(path, 'this is not a database')
+    expect(() => new SqliteGraphStore(path)).toThrow(/not be a codegraph index or may be corrupt/)
+  })
+})
