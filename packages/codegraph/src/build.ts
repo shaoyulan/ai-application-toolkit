@@ -275,9 +275,19 @@ export async function buildCodeGraph(options: BuildCodeGraphOptions): Promise<Co
   const scanned = await walk(options)
   const fileSet = new Set(scanned.map((f) => f.relPath))
 
-  // Reconcile the store's identity: a schema/grammar/config change invalidates
-  // the whole cache, so drop it and rebuild cold.
-  const cachedHashes = store ? await reconcileStore(store, options) : new Map<string, string>()
+  // Inspect (read-only) the store's identity: a schema/grammar/config change
+  // invalidates the whole cache, so we rebuild cold. Nothing is written until
+  // the single atomic commit at the end, so a crash never half-writes the index.
+  const wanted: StoreMeta = {
+    schemaVersion: STORE_SCHEMA_VERSION,
+    treeSitterVersion: treeSitterVersion(),
+    configHash: configHash(options),
+    root: resolve(options.dir)
+  }
+  const inspection = store ? await inspectStore(store, wanted) : undefined
+  const compatible = inspection?.compatible ?? false
+  const previousHashes = inspection?.previousHashes ?? new Map<string, string>()
+  const cachedHashes = compatible ? previousHashes : new Map<string, string>()
 
   const nodes: GraphNode[] = []
   const edges: GraphEdge[] = []
@@ -403,13 +413,16 @@ export async function buildCodeGraph(options: BuildCodeGraphOptions): Promise<Co
 
   let deleted = 0
   if (store) {
-    if (toPut.length > 0) await store.putFacts(toPut)
-    const stale = [...cachedHashes.keys()].filter((p) => !fileSet.has(p))
-    if (stale.length > 0) {
-      await store.deleteFiles(stale)
-      deleted = stale.length
-    }
-    await store.saveGraph(graph.toJSON())
+    // Warm build: drop files that vanished. Cold build: wipe the whole cache.
+    const stale = compatible ? [...previousHashes.keys()].filter((p) => !fileSet.has(p)) : []
+    deleted = stale.length
+    await store.commit({
+      facts: toPut,
+      deleteFiles: stale,
+      resetFiles: !compatible,
+      graph: graph.toJSON(),
+      meta: wanted
+    })
   }
 
   options.onStats?.({ files: fileBuilds.length, parsed, reused, deleted })
@@ -427,37 +440,21 @@ export async function loadCodeGraph(store: GraphStore): Promise<CodeGraph | unde
 }
 
 /**
- * Ensure the store matches the current schema/grammar/config; if not, wipe its
- * cache and re-stamp its identity. Returns the (possibly empty) path→hash map to
- * compare files against.
+ * Read-only check of whether the store matches the current
+ * schema/grammar/config, plus its cached path→hash map. No writes happen here —
+ * all persistence is deferred to a single atomic {@link GraphStore.commit}.
  */
-async function reconcileStore(
+async function inspectStore(
   store: GraphStore,
-  options: BuildCodeGraphOptions
-): Promise<Map<string, string>> {
-  const wanted: StoreMeta = {
-    schemaVersion: STORE_SCHEMA_VERSION,
-    treeSitterVersion: treeSitterVersion(),
-    configHash: configHash(options),
-    root: resolve(options.dir)
-  }
+  wanted: StoreMeta
+): Promise<{ compatible: boolean; previousHashes: Map<string, string> }> {
   const current = await store.meta()
   const compatible =
     current !== undefined &&
     current.schemaVersion === wanted.schemaVersion &&
     current.treeSitterVersion === wanted.treeSitterVersion &&
     current.configHash === wanted.configHash
-
-  if (compatible) {
-    // Keep the recorded repo path current if the index moved or is reused.
-    if (current.root !== wanted.root) await store.setMeta(wanted)
-    return store.getFileHashes()
-  }
-
-  const previous = await store.getFileHashes()
-  if (previous.size > 0) await store.deleteFiles([...previous.keys()])
-  await store.setMeta(wanted)
-  return new Map()
+  return { compatible, previousHashes: await store.getFileHashes() }
 }
 
 function define(map: Map<string, SymbolNode[]>, key: string): SymbolNode[] {

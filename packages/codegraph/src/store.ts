@@ -42,6 +42,20 @@ export interface FileRecord {
   facts: FileFacts
 }
 
+/** A completed build to persist atomically via {@link GraphStore.commit}. */
+export interface GraphCommit {
+  /** Parse facts to insert or replace. */
+  facts: FileRecord[]
+  /** Cached files to drop (stale/deleted). Ignored when `resetFiles` is set. */
+  deleteFiles?: string[]
+  /** Clear the whole file cache first (used for a cold rebuild). */
+  resetFiles?: boolean
+  /** The resolved graph to persist (replaces any previous graph). */
+  graph: SerializedCodeGraph
+  /** Index identity to stamp. */
+  meta: StoreMeta
+}
+
 /**
  * A cache of per-file parse facts plus the resolved graph. Implementations may
  * be sync or async; callers `await` every method so either works.
@@ -65,6 +79,13 @@ export interface GraphStore {
   saveGraph(graph: SerializedCodeGraph): Awaitable<void>
   /** Load the persisted graph, or undefined if none has been saved. */
   loadGraph(): Awaitable<SerializedCodeGraph | undefined>
+
+  /**
+   * Atomically persist a whole build — facts, deletions, resolved graph, and
+   * meta — in a single transaction, so a crash leaves the index either fully
+   * updated or untouched (never half-written).
+   */
+  commit(batch: GraphCommit): Awaitable<void>
 
   /** Release any underlying resources (file handles, DB connection). */
   close(): Awaitable<void>

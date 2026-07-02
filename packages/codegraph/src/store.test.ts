@@ -130,6 +130,40 @@ for (const driver of DRIVERS) {
       expect(store.getFileHashes().has('b.ts')).toBe(false)
       expect(store.getFileHashes().has('a.ts')).toBe(true)
     })
+
+    it('commit persists facts, graph and meta together', () => {
+      store.commit({
+        facts: [record('a.ts', 'h1')],
+        graph: { nodes: [{ id: 'file:a.ts', kind: 'file', path: 'a.ts', language: 'typescript' }], edges: [] },
+        meta: META
+      })
+      expect(store.getFileHashes().get('a.ts')).toBe('h1')
+      expect(store.loadGraph()?.nodes).toHaveLength(1)
+      expect(store.meta()).toEqual(META)
+    })
+
+    it('commit resetFiles wipes the previous file cache', () => {
+      store.putFacts([record('old.ts', 'h0')])
+      store.commit({ facts: [record('new.ts', 'h1')], resetFiles: true, graph: { nodes: [], edges: [] }, meta: META })
+      expect([...store.getFileHashes().keys()]).toEqual(['new.ts'])
+    })
+
+    it('commit is atomic — a mid-batch failure rolls back everything', () => {
+      store.commit({ facts: [record('a.ts', 'h1')], graph: { nodes: [], edges: [] }, meta: META })
+      const bad = { ...record('c.ts', 'h3'), facts: { get x() { throw new Error('boom') } } as never }
+      expect(() =>
+        store.commit({
+          facts: [record('b.ts', 'h2'), bad],
+          graph: { nodes: [{ id: 'file:z', kind: 'file', path: 'z', language: 'typescript' }], edges: [] },
+          meta: { ...META, configHash: 'changed' }
+        })
+      ).toThrow()
+      // Nothing from the failed commit applied: no new files, graph + meta unchanged.
+      expect(store.getFileHashes().has('b.ts')).toBe(false)
+      expect(store.getFileHashes().has('a.ts')).toBe(true)
+      expect(store.loadGraph()).toBeUndefined()
+      expect(store.meta()?.configHash).toBe('abc')
+    })
   })
 }
 

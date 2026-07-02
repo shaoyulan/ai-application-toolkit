@@ -17,7 +17,7 @@ import { dirname } from 'node:path'
 import { ToolkitError } from '@ai-application-toolkit/core'
 import type { EdgeKind, GraphNode, SerializedCodeGraph, SymbolKind } from './graph.js'
 import type { FileFacts } from './parser.js'
-import type { FileRecord, GraphStore, StoreMeta } from './store.js'
+import type { FileRecord, GraphCommit, GraphStore, StoreMeta } from './store.js'
 
 const require = createRequire(import.meta.url)
 
@@ -281,6 +281,43 @@ export class SqliteGraphStore implements GraphStore {
       for (const e of g.edges) insertEdge.run(e.from, e.to, e.kind, null)
     })
     tx(graph)
+  }
+
+  commit(batch: GraphCommit): void {
+    const putFile = this.db.prepare(
+      'INSERT OR REPLACE INTO files (path, language, hash, facts_json) VALUES (?, ?, ?, ?)'
+    )
+    const delFile = this.db.prepare('DELETE FROM files WHERE path = ?')
+    const insNode = this.db.prepare(
+      `INSERT OR REPLACE INTO nodes (id, kind, name, symbol_kind, path, start_line, end_line, language)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    const insEdge = this.db.prepare(
+      'INSERT OR REPLACE INTO edges (from_id, to_id, kind, meta_json) VALUES (?, ?, ?, ?)'
+    )
+    const setMetaStmt = this.db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)')
+
+    const tx = this.db.transaction((b: GraphCommit) => {
+      if (b.resetFiles) this.db.exec('DELETE FROM files;')
+      else for (const p of b.deleteFiles ?? []) delFile.run(p)
+      for (const r of b.facts) putFile.run(r.path, r.language, r.hash, JSON.stringify(r.facts))
+
+      this.db.exec('DELETE FROM nodes; DELETE FROM edges;')
+      for (const n of b.graph.nodes) {
+        if (n.kind === 'symbol') {
+          insNode.run(n.id, 'symbol', n.name, n.symbolKind, n.file, n.startLine, n.endLine, null)
+        } else {
+          insNode.run(n.id, 'file', null, null, n.path, null, null, n.language)
+        }
+      }
+      for (const e of b.graph.edges) insEdge.run(e.from, e.to, e.kind, null)
+
+      setMetaStmt.run('schemaVersion', String(b.meta.schemaVersion))
+      setMetaStmt.run('treeSitterVersion', b.meta.treeSitterVersion)
+      setMetaStmt.run('configHash', b.meta.configHash)
+      if (b.meta.root !== undefined) setMetaStmt.run('root', b.meta.root)
+    })
+    tx(batch)
   }
 
   loadGraph(): SerializedCodeGraph | undefined {
