@@ -72,24 +72,48 @@ graph.impact('parseFile', { direction: 'callers' }) // transitive blast radius
 
 ## CLI
 
-No install needed — run it with `npx`:
+No install needed — run any command with `npx`.
+
+**First time on a project? Run one command.** codegraph scans the folder for you
+on first use, so you do **not** need to run `build` (or anything else) first:
 
 ```bash
-# Build a graph and print a summary + the top-ranked symbols (in-memory)
-npx @ai-application-toolkit/codegraph build ./src
+# Explore the codebase as an MCP server (Claude Desktop, Cursor, another agent):
+npx @ai-application-toolkit/codegraph serve /path/to/project
 
-# Dump the full graph as JSON
-npx @ai-application-toolkit/codegraph build ./src --json > graph.json
+# …or just build a reusable on-disk index and stop there:
+npx @ai-application-toolkit/codegraph index /path/to/project
+```
 
-# Build/update a persistent, incremental index (see below)
-npx @ai-application-toolkit/codegraph index ./src
-npx @ai-application-toolkit/codegraph status ./src
-npx @ai-application-toolkit/codegraph list --global   # every global-cache index
+On the first run codegraph walks the whole folder once, saves an incremental
+index, and — for `serve` — prints a URL like `http://localhost:3000/mcp`. Every
+run after that is near-instant: only changed files are re-parsed.
 
-# Serve the graph as an MCP server, optionally behind a public tunnel.
-# serve starts instantly from the persistent index, refreshes in the background,
-# and watches for changes — hot-swapping the graph on edits (--no-watch to disable).
+### Commands at a glance
+
+| Command | What it does | Saves an index? |
+| --- | --- | --- |
+| `serve <dir>` | Serve the graph as an MCP server over HTTP | Yes, builds one if missing |
+| `index <dir>` | Build or update the on-disk index | Yes |
+| `sync <dir>` | Update an existing index (errors if there is none) | Yes |
+| `status <dir>` | Show an index's freshness, size and counts | No |
+| `list [dir]` | List a repo's indexes (`--global` lists all cached ones) | No |
+| `build <dir>` | One-shot, in-memory summary printed to the terminal | No |
+
+<Note>
+  **`build` is not a setup step.** It's a throwaway scan for a quick look and
+  leaves no cache behind, so running it before `serve`/`index` saves you
+  nothing. To work with a project, reach for `serve` or `index`.
+</Note>
+
+```bash
+# Serve on a specific port (omit --port to auto-select a free one from 3000),
+# and optionally publish a public URL via untun (Cloudflare quick tunnel):
 npx @ai-application-toolkit/codegraph serve ./src --port 3000 --tunnel
+
+# build: a quick, throwaway look — print a summary, or dump the full graph:
+npx @ai-application-toolkit/codegraph build ./src
+npx @ai-application-toolkit/codegraph build ./src --json > graph.json
 ```
 
 ## Persistent, incremental index
