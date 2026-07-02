@@ -27,37 +27,69 @@ Python; C#, Java, Go and Rust use namespace/module imports, so cross-file
 
 ## CLI (npx)
 
+No install needed — run any command with `npx`.
+
+**First time on a project? Run one command — that's it.** codegraph scans the
+folder for you on first use, so you do **not** need to run `build` (or anything
+else) first:
+
 ```bash
-# Build a graph and print a summary + the top-ranked symbols
+# Explore the codebase as an MCP server (Claude Desktop, Cursor, another agent):
+npx @ai-application-toolkit/codegraph serve /path/to/project
+
+# …or just build a reusable on-disk index and stop there:
+npx @ai-application-toolkit/codegraph index /path/to/project
+```
+
+On the first run codegraph walks the whole folder once, saves an incremental
+index, and — for `serve` — prints a URL like `http://localhost:3000/mcp`. Every
+run after that is near-instant: only changed files are re-parsed.
+
+### Commands at a glance
+
+| Command | What it does | Saves an index? |
+| --- | --- | --- |
+| `serve <dir>` | Serve the graph as an MCP server over HTTP | Yes, builds one if missing |
+| `index <dir>` | Build or update the on-disk index | Yes |
+| `sync <dir>` | Update an existing index (errors if there is none) | Yes |
+| `status <dir>` | Show an index's freshness, size and counts | No |
+| `list [dir]` | List a repo's indexes (`--global` lists all cached ones) | No |
+| `build <dir>` | One-shot, in-memory summary printed to the terminal | No |
+
+> **`build` is not a setup step.** It's a throwaway scan for a quick look and
+> leaves no cache behind, so running it before `serve`/`index` saves you nothing.
+> To actually work with a project, reach for `serve` or `index`.
+
+### serve — explore over MCP
+
+```bash
+# Omit --port to auto-select a free port from 3000; a busy --port falls back to
+# the next free one.
+npx @ai-application-toolkit/codegraph serve ./src --port 3000
+
+# Publish a public URL via untun (Cloudflare quick tunnel)
+npx @ai-application-toolkit/codegraph serve ./src --tunnel
+```
+
+`serve` starts instantly from the saved index, refreshes in the background, and
+watches for changes — hot-swapping the graph on edits (`--no-watch` to disable).
+It needs the optional dependency `@ai-application-toolkit/mcp`, and `--tunnel`
+needs `untun`; both are imported lazily so `build` stays lightweight. On its
+first run `--tunnel` downloads `cloudflared` and prompts you to accept its
+license, so run it in an interactive terminal.
+
+### build — a quick, throwaway look
+
+```bash
+# Print a summary + the top-ranked symbols (nothing is saved)
 npx @ai-application-toolkit/codegraph build ./src
 
 # Dump the full graph as JSON
 npx @ai-application-toolkit/codegraph build ./src --json > graph.json
 
-# Restrict languages
+# Restrict languages (works on every command)
 npx @ai-application-toolkit/codegraph build ./src --lang typescript,python,csharp
-
-# Build/update a persistent, incremental index under ./src/.codegraph/
-# (unchanged files are never re-parsed — a warm run is near-instant)
-npx @ai-application-toolkit/codegraph index ./src
-npx @ai-application-toolkit/codegraph status ./src   # freshness, size, counts
-npx @ai-application-toolkit/codegraph list ./src     # this repo's indexes
-npx @ai-application-toolkit/codegraph list --global  # every global-cache index
-
-# Serve the graph as an MCP server over HTTP …
-# (omit --port to auto-select a free port from 3000; a busy --port falls back to the next free one)
-# serve starts instantly from the persistent index, refreshes in the background,
-# and watches for changes — hot-swapping the graph on edits (--no-watch to disable).
-npx @ai-application-toolkit/codegraph serve ./src --port 3000
-
-# … and publish a public URL via untun (Cloudflare quick tunnel)
-npx @ai-application-toolkit/codegraph serve ./src --tunnel
 ```
-
-`serve` needs the optional dependency `@ai-application-toolkit/mcp`, and
-`--tunnel` needs `untun`; both are imported lazily so `build` stays lightweight.
-On its first run `--tunnel` downloads `cloudflared` and prompts you to accept
-its license, so run it in an interactive terminal.
 
 ### Persistent index
 
