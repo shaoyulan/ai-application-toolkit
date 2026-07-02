@@ -1,5 +1,24 @@
 # @ai-application-toolkit/codegraph
 
+## 0.3.0
+
+### Minor Changes
+
+- f88ad1e: Add a scope-aware, confidence-scored **call graph** and impact analysis.
+
+  - New `calls` edges resolve each call site to the definition it invokes, with a **confidence** score (1.0 exact, 0.8 high, 0.5 medium). Resolution is precision-first: local/`this`/imported/`new X()`-and-typed-param method calls resolve with high confidence for TS/JS/Python; other languages resolve by name/uniqueness; ambiguous or cross-language calls are skipped (never mis-wired). The existing name-based `references` edges and `find_references` are unchanged.
+  - New MCP tools: `codegraph_callers`, `codegraph_callees`, `codegraph_impact` (full blast radius in one call — every transitive caller grouped by depth with confidence), and `codegraph_affected` (impacted test files).
+  - New library API: `CodeGraph.callers()`, `.callees()`, `.impact()`; `GraphEdge.meta` (confidence/kind/receiverType/callCount/line); exported `EdgeMeta`, `ImpactOptions`, `ImpactNode`, `ImpactResult`. `calls` edges also feed PageRank, improving `relevant_context`.
+  - Index schema bumped (2→3) for the richer parse facts; the existing version-mismatch migration rebuilds automatically.
+
+- 5777523: Add a persistent, incremental index. `index`, `sync` and `serve` now keep a SQLite index that caches per-file parse results keyed by content hash, so unchanged files are never re-parsed — a warm rebuild is near-instant.
+
+  - **Zero-install on modern Node:** the SQLite backend is selected at runtime — `better-sqlite3` if installed, else Node's built-in `node:sqlite` (Node ≥ 23.4), else a graceful in-memory fallback for `serve`. Force one with `CODEGRAPH_SQLITE_DRIVER=node|better`.
+  - **Configurable index location:** defaults to `<dir>/.codegraph/index.db`; override with `--index <path>`, the `CODEGRAPH_INDEX` env var, or `--global` (store under `~/.cache/codegraph/`, keeping the repo clean).
+  - New CLI commands `index`, `sync`, `status`, and `list` (a repo's indexes, or `list --global` for every global-cache index, each labelled with its project). `serve` loads the persisted index and, by default, watches for changes and hot-swaps the served graph without a restart (`--no-watch` to disable). Each index records the repo it belongs to (`StoreMeta.root`).
+  - **Fast, incremental at scale:** unchanged files are skipped by an mtime+size check (no read/hash), only changed files are re-parsed, and persistence is one atomic transaction (a crash never half-writes the index). `serve` starts instantly from the stored graph and refreshes in the background; hot rebuilds during `--watch` skip rewriting the graph tables (persisted once on exit).
+  - `buildCodeGraph` accepts `store`, `persistGraph`, and reports `onStats`. New exports: `GraphStore`, `GraphCommit`, `FileStamp`, `SqliteGraphStore`, `SqliteDriver`, `openSqliteStore`, `withSqliteStore`, `loadCodeGraph`, `watchDirectory`.
+
 ## 0.2.0
 
 ### Minor Changes

@@ -1,5 +1,13 @@
 # @ai-application-toolkit/examples
 
+## 0.0.4
+
+### Patch Changes
+
+- Updated dependencies [f88ad1e]
+- Updated dependencies [5777523]
+  - @ai-application-toolkit/codegraph@0.3.0
+
 ## 0.0.3
 
 ### Patch Changes
