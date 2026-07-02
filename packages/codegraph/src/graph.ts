@@ -23,8 +23,24 @@ export type EdgeKind =
   | 'contains'
   /** A file imports another file. `from` = importer, `to` = imported. */
   | 'imports'
-  /** A symbol (or file) references a declared symbol. */
+  /** A symbol (or file) references a declared symbol (name-based, coarse). */
   | 'references'
+  /** A symbol calls another symbol (scope-aware, confidence-scored). */
+  | 'calls'
+
+/** Metadata carried by an edge (only `calls` edges use this today). */
+export interface EdgeMeta {
+  /** Resolution confidence for a `calls` edge: 1.0 exact, 0.8 high, 0.5 medium. */
+  confidence?: number
+  /** Whether the call is a constructor (`new X()`) vs a plain call. */
+  kind?: 'call' | 'new'
+  /** Resolved receiver type name for a method call, when known. */
+  receiverType?: string
+  /** Number of call sites collapsed into this edge. */
+  callCount?: number
+  /** 1-based line of the first call site. */
+  line?: number
+}
 
 export interface FileNode {
   readonly id: string
@@ -53,6 +69,7 @@ export interface GraphEdge {
   readonly from: string
   readonly to: string
   readonly kind: EdgeKind
+  readonly meta?: EdgeMeta
 }
 
 export interface RankedContextOptions {
@@ -79,6 +96,30 @@ export interface NeighborOptions {
   incoming?: boolean
   /** Restrict to these edge kinds. Default: all. */
   edgeKinds?: EdgeKind[]
+}
+
+export interface ImpactOptions {
+  /** `callers` = who is impacted if this changes; `callees` = its dependencies. Default `callers`. */
+  direction?: 'callers' | 'callees'
+  /** Maximum traversal depth. Default 5. */
+  maxDepth?: number
+  /** Stop after this many reached nodes (sets `truncated`). Default 200. */
+  maxNodes?: number
+  /** Ignore `calls` edges below this confidence. Default 0. */
+  minConfidence?: number
+}
+
+export interface ImpactNode {
+  node: GraphNode
+  /** Hops from the target (1 = direct caller/callee). */
+  depth: number
+  /** Weakest edge confidence along the shortest discovery path. */
+  confidence: number
+}
+
+export interface ImpactResult {
+  groups: { depth: number; nodes: ImpactNode[] }[]
+  truncated: boolean
 }
 
 export interface SerializedCodeGraph {
@@ -212,6 +253,90 @@ export class CodeGraph {
   /** Edges arriving at `id`. */
   edgesTo(id: string): GraphEdge[] {
     return [...(this.incoming.get(id) ?? [])]
+  }
+
+  /** Node ids for an exact node id or a bare symbol name. */
+  private idsFor(idOrName: string): string[] {
+    return this.nodesById.has(idOrName) ? [idOrName] : (this.symbolsByName.get(idOrName) ?? [])
+  }
+
+  /** Direct callees — the symbols the given symbol calls. */
+  callees(idOrName: string): GraphNode[] {
+    return this.callNeighbors(idOrName, 'out')
+  }
+
+  /** Direct callers — the symbols that call the given symbol. */
+  callers(idOrName: string): GraphNode[] {
+    return this.callNeighbors(idOrName, 'in')
+  }
+
+  private callNeighbors(idOrName: string, dir: 'in' | 'out'): GraphNode[] {
+    const result = new Map<string, GraphNode>()
+    for (const id of this.idsFor(idOrName)) {
+      const edges = (dir === 'out' ? this.outgoing : this.incoming).get(id) ?? []
+      for (const edge of edges) {
+        if (edge.kind !== 'calls') continue
+        const node = this.nodesById.get(dir === 'out' ? edge.to : edge.from)
+        if (node) result.set(node.id, node)
+      }
+    }
+    return [...result.values()]
+  }
+
+  /**
+   * Blast radius over the call graph: transitively follow `calls` edges from the
+   * given symbol (`callers` = who is impacted if it changes; `callees` = what it
+   * depends on), returning reached symbols grouped by depth with a confidence
+   * (the weakest edge along the shortest discovery path). Bounded by
+   * `maxDepth`/`maxNodes`; edges below `minConfidence` are ignored.
+   */
+  impact(idOrName: string, options: ImpactOptions = {}): ImpactResult {
+    const direction = options.direction ?? 'callers'
+    const maxDepth = options.maxDepth ?? 5
+    const maxNodes = options.maxNodes ?? 200
+    const minConfidence = options.minConfidence ?? 0
+    const edgesOf = direction === 'callers' ? this.incoming : this.outgoing
+    const pick = (e: GraphEdge) => (direction === 'callers' ? e.from : e.to)
+
+    const seen = new Set<string>(this.idsFor(idOrName))
+    let frontier = [...seen].map((id) => ({ id, confidence: 1 }))
+    const reached: ImpactNode[] = []
+    let truncated = false
+
+    for (let depth = 1; depth <= maxDepth && frontier.length > 0; depth++) {
+      const next = new Map<string, number>()
+      for (const { id, confidence } of frontier) {
+        for (const edge of (edgesOf.get(id) ?? [])) {
+          if (edge.kind !== 'calls') continue
+          const edgeConf = edge.meta?.confidence ?? 0
+          if (edgeConf < minConfidence) continue
+          const nextId = pick(edge)
+          if (seen.has(nextId)) continue
+          const pathConf = Math.min(confidence, edgeConf)
+          next.set(nextId, Math.max(next.get(nextId) ?? 0, pathConf))
+        }
+      }
+      const sorted = [...next.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      for (const [id, confidence] of sorted) {
+        if (reached.length >= maxNodes) { truncated = true; break }
+        seen.add(id)
+        const node = this.nodesById.get(id)
+        if (node) reached.push({ node, depth, confidence })
+      }
+      frontier = sorted.filter(([id]) => seen.has(id) && this.nodesById.has(id)).map(([id, confidence]) => ({ id, confidence }))
+      if (truncated) break
+    }
+
+    const byDepth = new Map<number, ImpactNode[]>()
+    for (const item of reached) {
+      const list = byDepth.get(item.depth)
+      if (list) list.push(item)
+      else byDepth.set(item.depth, [item])
+    }
+    const groups = [...byDepth.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([depth, nodes]) => ({ depth, nodes }))
+    return { groups, truncated }
   }
 
   /** The symbols a file declares plus the files it imports. */

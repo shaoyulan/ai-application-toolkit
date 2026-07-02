@@ -20,9 +20,13 @@ export { watchDirectory, type WatchOptions, type Watcher } from './watch.js'
 export {
   CodeGraph,
   type EdgeKind,
+  type EdgeMeta,
   type FileNode,
   type GraphEdge,
   type GraphNode,
+  type ImpactNode,
+  type ImpactOptions,
+  type ImpactResult,
   type NeighborOptions,
   type RankedContextOptions,
   type RankedNode,

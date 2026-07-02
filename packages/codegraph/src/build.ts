@@ -13,14 +13,16 @@ import { readdir, readFile, stat } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, extname, join, posix, relative, resolve, sep } from 'node:path'
 import { ToolkitError } from '@ai-application-toolkit/core'
-import { CodeGraph, type GraphEdge, type GraphNode, type SymbolNode } from './graph.js'
+import { CodeGraph, type EdgeMeta, type GraphEdge, type GraphNode, type SymbolNode } from './graph.js'
 import {
   languageForExtension,
   parseFile,
   type DefinitionFact,
   type FileFacts,
   type ImportStyle,
-  type LanguageSpec
+  type LanguageSpec,
+  type ReferenceFact,
+  type TypeBinding
 } from './parser.js'
 import { STORE_SCHEMA_VERSION, type FileRecord, type FileStamp, type GraphStore, type StoreMeta } from './store.js'
 // Importing rank.ts here guarantees the PageRank implementation is registered
@@ -192,8 +194,9 @@ interface FileBuild {
   spec: LanguageSpec
   fileNode: GraphNode
   symbols: { node: SymbolNode; def: DefinitionFact }[]
-  references: { name: string; startIndex: number }[]
+  references: ReferenceFact[]
   imports: string[]
+  typeBindings: TypeBinding[]
 }
 
 /** Innermost symbol whose byte range contains `index`, or undefined. */
@@ -205,6 +208,219 @@ function enclosingSymbol(file: FileBuild, index: number): SymbolNode | undefined
     }
   }
   return best?.node
+}
+
+/** Innermost class/interface whose byte range contains `index`, or undefined. */
+function enclosingClass(file: FileBuild, index: number): SymbolNode | undefined {
+  let best: { node: SymbolNode; def: DefinitionFact } | undefined
+  for (const entry of file.symbols) {
+    if (
+      (entry.node.symbolKind === 'class' || entry.node.symbolKind === 'interface') &&
+      entry.def.startIndex <= index &&
+      index <= entry.def.endIndex
+    ) {
+      if (!best || entry.def.startIndex > best.def.startIndex) best = entry
+    }
+  }
+  return best?.node
+}
+
+// --- Call-graph resolution (confidence-scored, scope-aware) ----------------
+
+const CONF_EXACT = 1.0
+const CONF_HIGH = 0.8
+const CONF_MEDIUM = 0.5
+const JS_FAMILY_IDS = new Set(['javascript', 'typescript', 'tsx'])
+
+/** Whether two language ids are close enough to resolve a call across (JS family counts as one). */
+function sameFamily(a: string, b: string): boolean {
+  return a === b || (JS_FAMILY_IDS.has(a) && JS_FAMILY_IDS.has(b))
+}
+
+interface Resolved {
+  target: SymbolNode
+  confidence: number
+  receiverType?: string
+}
+
+/**
+ * Resolve every call site to a definition with a confidence score and emit
+ * `calls` edges. Precise where it can prove the target (local, `this`, imports,
+ * `new X()`/typed receivers), conservative otherwise (skip rather than mis-wire).
+ */
+function resolveCallGraph(
+  fileBuilds: FileBuild[],
+  specByPath: Map<string, LanguageSpec>,
+  definitionsByName: Map<string, SymbolNode[]>,
+  addEdge: (edge: GraphEdge) => void
+): void {
+  const langOf = (relPath: string): string => specByPath.get(relPath)?.id ?? ''
+
+  // Cross-file lookups: classes by name, methods by name, and per-class methods.
+  const classByName = new Map<string, SymbolNode[]>()
+  const methodByName = new Map<string, SymbolNode[]>()
+  const methodsByClassId = new Map<string, Map<string, SymbolNode>>()
+
+  for (const file of fileBuilds) {
+    const classes = file.symbols.filter(
+      (s) => s.node.symbolKind === 'class' || s.node.symbolKind === 'interface'
+    )
+    for (const c of classes) (classByName.get(c.node.name) ?? define(classByName, c.node.name)).push(c.node)
+    for (const s of file.symbols) {
+      if (s.node.symbolKind !== 'method' && s.node.symbolKind !== 'field') continue
+      ;(methodByName.get(s.node.name) ?? define(methodByName, s.node.name)).push(s.node)
+      const cls = classes.find(
+        (c) => c.def.startIndex <= s.def.startIndex && s.def.endIndex <= c.def.endIndex
+      )
+      if (cls) {
+        const m = methodsByClassId.get(cls.node.id) ?? new Map<string, SymbolNode>()
+        if (!methodsByClassId.has(cls.node.id)) methodsByClassId.set(cls.node.id, m)
+        if (!m.has(s.node.name)) m.set(s.node.name, s.node)
+      }
+    }
+  }
+
+  // Aggregate call sites so multiple A→B calls collapse to one edge with a count.
+  const agg = new Map<string, GraphEdge & { meta: EdgeMeta }>()
+
+  for (const file of fileBuilds) {
+    const lang = file.spec.id
+    const inFamily = (n: SymbolNode) => sameFamily(langOf(n.file), lang)
+
+    const importedFiles = new Set<string>()
+    for (const raw of file.imports) {
+      const t = resolveImport(file.spec.importStyle, file.relPath, raw, new Set(specByPath.keys()))
+      if (t) importedFiles.add(t)
+    }
+
+    // Local type env (var → class name); drop names bound to conflicting types.
+    const typeEnv = new Map<string, string>()
+    const conflicted = new Set<string>()
+    for (const b of file.typeBindings) {
+      if (conflicted.has(b.name)) continue
+      const prev = typeEnv.get(b.name)
+      if (prev && prev !== b.type) {
+        typeEnv.delete(b.name)
+        conflicted.add(b.name)
+      } else typeEnv.set(b.name, b.type)
+    }
+
+    for (const ref of file.references) {
+      const from = enclosingSymbol(file, ref.startIndex) ?? file.fileNode
+      const resolved = resolveCall(ref, file, {
+        inFamily,
+        importedFiles,
+        typeEnv,
+        classByName,
+        methodByName,
+        methodsByClassId,
+        definitionsByName,
+        enclosingClassNode: enclosingClass(file, ref.startIndex)
+      })
+      if (!resolved || resolved.target.id === from.id) continue
+
+      const key = `${from.id}->${resolved.target.id}`
+      const prev = agg.get(key)
+      if (prev) {
+        prev.meta.confidence = Math.max(prev.meta.confidence ?? 0, resolved.confidence)
+        prev.meta.callCount = (prev.meta.callCount ?? 1) + 1
+        prev.meta.line = Math.min(prev.meta.line ?? ref.line, ref.line)
+        if (ref.isNew) prev.meta.kind = 'new'
+      } else {
+        agg.set(key, {
+          from: from.id,
+          to: resolved.target.id,
+          kind: 'calls',
+          meta: {
+            confidence: resolved.confidence,
+            kind: ref.isNew ? 'new' : 'call',
+            line: ref.line,
+            callCount: 1,
+            ...(resolved.receiverType ? { receiverType: resolved.receiverType } : {})
+          }
+        })
+      }
+    }
+  }
+
+  for (const edge of agg.values()) addEdge(edge)
+}
+
+interface ResolveCtx {
+  inFamily: (n: SymbolNode) => boolean
+  importedFiles: Set<string>
+  typeEnv: Map<string, string>
+  classByName: Map<string, SymbolNode[]>
+  methodByName: Map<string, SymbolNode[]>
+  methodsByClassId: Map<string, Map<string, SymbolNode>>
+  definitionsByName: Map<string, SymbolNode[]>
+  enclosingClassNode: SymbolNode | undefined
+}
+
+/** Resolve one call site to a target + confidence, or undefined if unprovable. */
+function resolveCall(ref: ReferenceFact, file: FileBuild, ctx: ResolveCtx): Resolved | undefined {
+  const method = (cls: SymbolNode | undefined, name: string): SymbolNode | undefined =>
+    cls ? ctx.methodsByClassId.get(cls.id)?.get(name) : undefined
+
+  // Constructor `new X()` → the class X.
+  if (ref.isNew) {
+    const target = pickUnique(ctx.classByName.get(ref.name), file, ctx)
+    return target ? { target, confidence: CONF_HIGH } : undefined
+  }
+
+  if (ref.receiver) {
+    // `this.m()` / `self.m()` → a method of the enclosing class.
+    if (ref.receiver === 'this' || ref.receiver === 'self') {
+      const m = method(ctx.enclosingClassNode, ref.name)
+      return m ? { target: m, confidence: CONF_EXACT } : undefined
+    }
+    // `obj.m()` where obj's type is known (new X() / typed param).
+    const typeName = ctx.typeEnv.get(ref.receiver)
+    if (typeName) {
+      const cls = pickUnique(ctx.classByName.get(typeName), file, ctx)
+      const m = method(cls, ref.name)
+      if (m) return { target: m, confidence: CONF_HIGH, receiverType: typeName }
+    }
+    // `Foo.m()` static call where the receiver is itself a class name.
+    const staticCls = pickUnique(ctx.classByName.get(ref.receiver), file, ctx)
+    const staticM = method(staticCls, ref.name)
+    if (staticM) return { target: staticM, confidence: CONF_HIGH, receiverType: ref.receiver }
+    // Unknown receiver: only if the method name is globally unique.
+    const uniq = onlyInFamily(ctx.methodByName.get(ref.name), file, ctx)
+    return uniq ? { target: uniq, confidence: CONF_MEDIUM } : undefined
+  }
+
+  // Bare call `foo()`: same-file, then imported-unique, then globally-unique.
+  const cands = (ctx.definitionsByName.get(ref.name) ?? []).filter(ctx.inFamily)
+  if (cands.length === 0) return undefined
+  const sameFile = cands.find((c) => c.file === file.relPath)
+  if (sameFile) return { target: sameFile, confidence: CONF_EXACT }
+  const imported = cands.filter((c) => ctx.importedFiles.has(c.file))
+  if (imported.length === 1) return { target: imported[0], confidence: CONF_HIGH }
+  if (cands.length === 1) return { target: cands[0], confidence: CONF_HIGH }
+  return undefined
+}
+
+/** The single family-matching candidate, or undefined if none/ambiguous. */
+function pickUnique(
+  cands: SymbolNode[] | undefined,
+  file: FileBuild,
+  ctx: ResolveCtx
+): SymbolNode | undefined {
+  const inFam = (cands ?? []).filter(ctx.inFamily)
+  const sameFile = inFam.find((c) => c.file === file.relPath)
+  if (sameFile) return sameFile
+  return inFam.length === 1 ? inFam[0] : undefined
+}
+
+/** The single globally-unique family-matching candidate, or undefined. */
+function onlyInFamily(
+  cands: SymbolNode[] | undefined,
+  _file: FileBuild,
+  ctx: ResolveCtx
+): SymbolNode | undefined {
+  const inFam = (cands ?? []).filter(ctx.inFamily)
+  return inFam.length === 1 ? inFam[0] : undefined
 }
 
 /** Resolve a relative ESM/CJS specifier to a scanned file's relPath. */
@@ -384,8 +600,9 @@ export async function buildCodeGraph(options: BuildCodeGraphOptions): Promise<Co
       spec,
       fileNode,
       symbols: [],
-      references: facts.references.map((r) => ({ name: r.name, startIndex: r.startIndex })),
-      imports: facts.imports.map((i) => i.raw)
+      references: facts.references,
+      imports: facts.imports.map((i) => i.raw),
+      typeBindings: facts.typeBindings
     }
 
     for (const def of facts.definitions) {
@@ -436,6 +653,9 @@ export async function buildCodeGraph(options: BuildCodeGraphOptions): Promise<Co
       addEdge({ from: fromNode.id, to: target.id, kind: 'references' })
     }
   }
+
+  // Third pass: scope-aware, confidence-scored call graph ('calls' edges).
+  resolveCallGraph(fileBuilds, specByPath, definitionsByName, addEdge)
 
   const graph = new CodeGraph(nodes, edges)
 

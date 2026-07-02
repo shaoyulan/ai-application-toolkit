@@ -39,8 +39,9 @@ const record = (path: string, hash: string): FileRecord => ({
   size: 42,
   facts: {
     definitions: [{ name: 'foo', kind: 'function', startLine: 1, endLine: 3, startIndex: 0, endIndex: 20 }],
-    references: [{ name: 'bar', startIndex: 10 }],
-    imports: [{ raw: './bar' }]
+    references: [{ name: 'bar', startIndex: 10, line: 1 }],
+    imports: [{ raw: './bar' }],
+    typeBindings: []
   }
 })
 
@@ -194,7 +195,7 @@ describe('openSqliteStore error handling', () => {
           hash: 'h',
           mtimeMs: 1,
           size: 1,
-          facts: { definitions: [], references: [], imports: [] }
+          facts: { definitions: [], references: [], imports: [], typeBindings: [] }
         }
       ])
       return store.getFileHashes().size

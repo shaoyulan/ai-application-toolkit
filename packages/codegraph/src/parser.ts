@@ -64,6 +64,11 @@ const JS_FAMILY: string[] = [
   '(call_expression function: (member_expression property: (property_identifier) @name)) @reference.call',
   '(new_expression constructor: (identifier) @name) @reference.call',
   '(new_expression constructor: (type_identifier) @name) @reference.call',
+  // Type bindings for method-call resolution (TS-only node types compile out for JS).
+  '(variable_declarator name: (identifier) @bind.name value: (new_expression constructor: (identifier) @bind.type))',
+  '(variable_declarator name: (identifier) @bind.name value: (new_expression constructor: (type_identifier) @bind.type))',
+  '(required_parameter pattern: (identifier) @bind.name type: (type_annotation (type_identifier) @bind.type))',
+  '(variable_declarator name: (identifier) @bind.name type: (type_annotation (type_identifier) @bind.type))',
   '(import_statement source: (string) @import)',
   '(export_statement source: (string) @import)'
 ]
@@ -73,6 +78,8 @@ const PYTHON: string[] = [
   '(class_definition name: (identifier) @name) @definition.class',
   '(call function: (identifier) @name) @reference.call',
   '(call function: (attribute attribute: (identifier) @name)) @reference.call',
+  '(assignment left: (identifier) @bind.name right: (call function: (identifier) @bind.type))',
+  '(typed_parameter (identifier) @bind.name type: (type (identifier) @bind.type))',
   '(import_from_statement module_name: (dotted_name) @import)',
   '(import_from_statement module_name: (relative_import) @import)',
   '(import_statement name: (dotted_name) @import)',
@@ -220,6 +227,13 @@ export interface ReferenceFact {
   name: string
   /** Byte offset of the reference, used to find its enclosing symbol. */
   startIndex: number
+  /** 1-based line of the call site. */
+  line: number
+  /** Receiver/qualifier of a member call — e.g. `obj`, `this`, `mod` in
+   * `obj.method()` — when it is a simple identifier. Absent for bare calls. */
+  receiver?: string
+  /** True when the call is a constructor (`new X()` / object creation). */
+  isNew?: boolean
 }
 
 export interface ImportFact {
@@ -227,10 +241,19 @@ export interface ImportFact {
   raw: string
 }
 
+/** A local variable's inferred class type, for resolving `obj.method()`. */
+export interface TypeBinding {
+  /** Variable/parameter name. */
+  name: string
+  /** Class/type name it is bound to (via `new X()` or a type annotation). */
+  type: string
+}
+
 export interface FileFacts {
   definitions: DefinitionFact[]
   references: ReferenceFact[]
   imports: ImportFact[]
+  typeBindings: TypeBinding[]
 }
 
 function unquote(text: string): string {
@@ -241,7 +264,7 @@ function unquote(text: string): string {
 export async function parseFile(spec: LanguageSpec, source: string): Promise<FileFacts> {
   const { language, queries } = await compileLanguage(spec)
 
-  const facts: FileFacts = { definitions: [], references: [], imports: [] }
+  const facts: FileFacts = { definitions: [], references: [], imports: [], typeBindings: [] }
   const parser = new Parser()
   let tree: ReturnType<Parser['parse']> = null
   try {
@@ -267,26 +290,36 @@ function extractFacts(queries: Query[], tree: NonNullable<ReturnType<Parser['par
       // The `@definition.*` / `@reference.*` capture spans the whole node; its
       // range becomes the symbol's range.
       let rangeNode: Node | undefined
-      let isReference = false
+      let refNode: Node | undefined
       let importNode: Node | undefined
+      let bindNameNode: Node | undefined
+      let bindTypeNode: Node | undefined
 
       for (const capture of match.captures) {
         if (capture.name === 'name') {
           nameNode = capture.node
         } else if (capture.name === 'import') {
           importNode = capture.node
+        } else if (capture.name === 'bind.name') {
+          bindNameNode = capture.node
+        } else if (capture.name === 'bind.type') {
+          bindTypeNode = capture.node
         } else if (capture.name.startsWith('definition.')) {
           const kind = capture.name.slice('definition.'.length)
           if (SYMBOL_KINDS.has(kind)) definitionKind = kind as SymbolKind
           rangeNode = capture.node
         } else if (capture.name.startsWith('reference.')) {
-          isReference = true
+          refNode = capture.node
         }
       }
 
       if (importNode) {
         const raw = unquote(importNode.text).trim()
         if (raw) facts.imports.push({ raw })
+      }
+
+      if (bindNameNode && bindTypeNode) {
+        facts.typeBindings.push({ name: bindNameNode.text, type: bindTypeNode.text })
       }
 
       if (nameNode && definitionKind && rangeNode) {
@@ -298,9 +331,37 @@ function extractFacts(queries: Query[], tree: NonNullable<ReturnType<Parser['par
           startIndex: rangeNode.startIndex,
           endIndex: rangeNode.endIndex
         })
-      } else if (nameNode && isReference) {
-        facts.references.push({ name: nameNode.text, startIndex: nameNode.startIndex })
+      } else if (nameNode && refNode) {
+        const receiver = receiverName(nameNode)
+        const isNew = /new_expression|object_creation/.test(refNode.type)
+        facts.references.push({
+          name: nameNode.text,
+          startIndex: nameNode.startIndex,
+          line: nameNode.startPosition.row + 1,
+          ...(receiver ? { receiver } : {}),
+          ...(isNew ? { isNew: true } : {})
+        })
       }
     }
   }
+}
+
+// Field names that hold the receiver/qualifier across the grammars we support:
+// member_expression.object (JS), attribute.object (Py), method_invocation.object
+// (Java), selector_expression.operand (Go), member_access_expression.expression
+// (C#), field_expression.value (Rust).
+const RECEIVER_FIELDS = ['object', 'operand', 'expression', 'value'] as const
+
+/** Simple receiver identifier (`obj`, `this`, `mod`) of a member call, or undefined. */
+function receiverName(nameNode: Node): string | undefined {
+  const parent = nameNode.parent
+  if (!parent) return undefined
+  let recv: Node | null = null
+  for (const field of RECEIVER_FIELDS) {
+    recv = parent.childForFieldName(field)
+    if (recv) break
+  }
+  if (!recv || recv.startIndex === nameNode.startIndex) return undefined
+  const text = recv.text
+  return /^[A-Za-z_$][\w$]*$/.test(text) ? text : undefined
 }

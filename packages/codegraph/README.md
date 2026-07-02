@@ -100,8 +100,33 @@ graph.findDefinition('buildCodeGraph') // where is it declared?
 graph.findReferences('CodeGraph')      // who uses it?
 graph.fileSummary('src/build.ts')      // symbols + imported files
 
+// Call graph:
+graph.callers('parseFile')             // who calls it (confidence-scored via impact)
+graph.callees('buildCodeGraph')        // what it calls
+graph.impact('parseFile', { direction: 'callers' }) // blast radius, grouped by depth
+
 // "What matters around what I'm editing?" — ranked context for an LLM:
 graph.rankedContext({ seeds: ['parseFile'], limit: 15 })
+```
+
+## Call graph & impact analysis
+
+On top of coarse, name-based `references`, codegraph resolves a **scope-aware call
+graph**: `calls` edges from a symbol to the definition it invokes, each with a
+**confidence** score (1.0 exact, 0.8 high, 0.5 medium). Resolution uses imports,
+`this`, and lightweight type tracking (`new X()` / typed params → `x.method()`)
+for TS/JS/Python; other languages resolve by name/uniqueness. It is **precision-
+first** — ambiguous or cross-language calls are skipped rather than mis-wired.
+
+`codegraph_impact` returns the full blast radius in **one** call — every
+transitive caller grouped by depth with confidence — so an agent knows what a
+change risks before touching it:
+
+```jsonc
+// codegraph_impact { "symbol": "registerAllPlugins" }
+{ "target": "registerAllPlugins",
+  "groups": [{ "depth": 1, "nodes": [{ "name": "Bridge", "file": "…/Bridge.java", "line": 192, "confidence": 1 }] }],
+  "truncated": false }
 ```
 
 ## As tools / capability
@@ -117,7 +142,9 @@ const codegraph = defineCodegraphCapability(graph)
 const runtime = createRuntime({ tools: collectCapabilityTools([codegraph]) })
 // Tools: codegraph_search_symbols, codegraph_find_definition,
 //        codegraph_find_references, codegraph_neighbors,
-//        codegraph_file_summary, codegraph_relevant_context
+//        codegraph_file_summary, codegraph_relevant_context,
+//        codegraph_callers, codegraph_callees, codegraph_impact,
+//        codegraph_affected
 ```
 
 ## Ask your codebase (RAG)

@@ -16,7 +16,7 @@ import type { SerializedCodeGraph } from './graph.js'
 import type { FileFacts } from './parser.js'
 
 /** Bumped when the on-disk schema or fact shape changes incompatibly. */
-export const STORE_SCHEMA_VERSION = 2
+export const STORE_SCHEMA_VERSION = 3
 
 /** Identifies the index build so a mismatch forces a cold rebuild. */
 export interface StoreMeta {

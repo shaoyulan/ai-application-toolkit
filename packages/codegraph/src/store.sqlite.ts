@@ -15,7 +15,7 @@ import { mkdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname } from 'node:path'
 import { ToolkitError } from '@ai-application-toolkit/core'
-import type { EdgeKind, GraphNode, SerializedCodeGraph, SymbolKind } from './graph.js'
+import type { EdgeKind, EdgeMeta, GraphNode, SerializedCodeGraph, SymbolKind } from './graph.js'
 import type { FileFacts } from './parser.js'
 import { STORE_SCHEMA_VERSION, type FileRecord, type FileStamp, type GraphCommit, type GraphStore, type StoreMeta } from './store.js'
 
@@ -305,7 +305,7 @@ export class SqliteGraphStore implements GraphStore {
           insertNode.run(n.id, 'file', null, null, n.path, null, null, n.language)
         }
       }
-      for (const e of g.edges) insertEdge.run(e.from, e.to, e.kind, null)
+      for (const e of g.edges) insertEdge.run(e.from, e.to, e.kind, e.meta ? JSON.stringify(e.meta) : null)
     })
     tx(graph)
   }
@@ -339,7 +339,7 @@ export class SqliteGraphStore implements GraphStore {
             insNode.run(n.id, 'file', null, null, n.path, null, null, n.language)
           }
         }
-        for (const e of b.graph.edges) insEdge.run(e.from, e.to, e.kind, null)
+        for (const e of b.graph.edges) insEdge.run(e.from, e.to, e.kind, e.meta ? JSON.stringify(e.meta) : null)
       }
 
       setMetaStmt.run('schemaVersion', String(b.meta.schemaVersion))
@@ -366,12 +366,18 @@ export class SqliteGraphStore implements GraphStore {
           }
         : { id: r.id, kind: 'file' as const, path: r.path ?? '', language: r.language ?? '' }
     )
-    const edgeRows = this.db.prepare('SELECT from_id, to_id, kind FROM edges').all() as {
+    const edgeRows = this.db.prepare('SELECT from_id, to_id, kind, meta_json FROM edges').all() as {
       from_id: string
       to_id: string
       kind: string
+      meta_json: string | null
     }[]
-    const edges = edgeRows.map((e) => ({ from: e.from_id, to: e.to_id, kind: e.kind as EdgeKind }))
+    const edges = edgeRows.map((e) => ({
+      from: e.from_id,
+      to: e.to_id,
+      kind: e.kind as EdgeKind,
+      ...(e.meta_json ? { meta: JSON.parse(e.meta_json) as EdgeMeta } : {})
+    }))
     return { nodes, edges }
   }
 

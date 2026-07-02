@@ -49,7 +49,25 @@ const runtime = createRuntime({
 })
 // Tools: codegraph_search_symbols, codegraph_find_definition,
 //        codegraph_find_references, codegraph_neighbors,
-//        codegraph_file_summary, codegraph_relevant_context
+//        codegraph_file_summary, codegraph_relevant_context,
+//        codegraph_callers, codegraph_callees, codegraph_impact,
+//        codegraph_affected
+```
+
+## Call graph & impact
+
+Beyond coarse `references`, codegraph resolves a **scope-aware call graph** —
+`calls` edges to the actual definition invoked, each with a **confidence** (1.0
+exact / 0.8 high / 0.5 medium). It uses imports, `this`, and light type tracking
+(`new X()` / typed params → `x.method()`) for TS/JS/Python, and is
+**precision-first**: ambiguous or cross-language calls are skipped, not
+mis-wired. `codegraph_impact` returns the whole blast radius (every transitive
+caller, grouped by depth, confidence-scored) in a single call — what an agent
+needs before editing a symbol. `codegraph_affected` narrows that to test files.
+
+```ts
+graph.callers('parseFile')                          // direct callers
+graph.impact('parseFile', { direction: 'callers' }) // transitive blast radius
 ```
 
 ## CLI
