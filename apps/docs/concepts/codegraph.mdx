@@ -57,14 +57,56 @@ const runtime = createRuntime({
 No install needed — run it with `npx`:
 
 ```bash
-# Build a graph and print a summary + the top-ranked symbols
+# Build a graph and print a summary + the top-ranked symbols (in-memory)
 npx @ai-application-toolkit/codegraph build ./src
 
 # Dump the full graph as JSON
 npx @ai-application-toolkit/codegraph build ./src --json > graph.json
 
-# Serve the graph as an MCP server, optionally behind a public tunnel
+# Build/update a persistent, incremental index (see below)
+npx @ai-application-toolkit/codegraph index ./src
+npx @ai-application-toolkit/codegraph status ./src
+
+# Serve the graph as an MCP server, optionally behind a public tunnel.
+# serve loads the persistent index and watches for changes, hot-swapping the
+# graph on edits (--no-watch to disable).
 npx @ai-application-toolkit/codegraph serve ./src --port 3000 --tunnel
+```
+
+## Persistent, incremental index
+
+`index`, `sync` and `serve` keep a SQLite index that caches per-file parse
+results keyed by a content hash, so only changed files are re-parsed — a warm
+rebuild is near-instant, which is what makes serving a large repo practical.
+
+**No install needed on modern Node.** The SQLite backend is chosen at runtime:
+an installed `better-sqlite3` is preferred, otherwise Node's built-in
+`node:sqlite` (Node ≥ 23.4) is used with zero dependencies, otherwise `serve`
+falls back to a plain in-memory build. Force one with
+`CODEGRAPH_SQLITE_DRIVER=node` (skip the native module) or `=better`.
+
+**Index location** defaults to `<dir>/.codegraph/index.db` (add `.codegraph/` to
+`.gitignore`). Override with `--index <path>`, the `CODEGRAPH_INDEX` env var, or
+`--global` to store it under `~/.cache/codegraph/` and keep the repo clean.
+
+```bash
+npx @ai-application-toolkit/codegraph index ./src --global
+npx @ai-application-toolkit/codegraph serve ./src --index /tmp/mygraph.db
+```
+
+From the library, pass a store to `buildCodeGraph` for the same incremental
+caching:
+
+```ts
+import { buildCodeGraph, openSqliteStore } from '@ai-application-toolkit/codegraph'
+
+const store = openSqliteStore('./.codegraph/index.db')
+const graph = await buildCodeGraph({
+  dir: './src',
+  store,
+  onStats: (s) => console.log(`parsed ${s.parsed}, reused ${s.reused}`)
+})
+store.close()
 ```
 
 Runnable examples: [`codegraph.ts`](/examples), [`codegraph-qa.ts`](/examples)
