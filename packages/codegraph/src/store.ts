@@ -26,6 +26,8 @@ export interface StoreMeta {
   treeSitterVersion: string
   /** Hash of the build configuration (e.g. the language filter). */
   configHash: string
+  /** Absolute path of the indexed repo, so an index can name its project. */
+  root?: string
 }
 
 /** A file's cached parse result, keyed by its content hash. */

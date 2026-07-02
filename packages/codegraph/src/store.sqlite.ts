@@ -203,7 +203,7 @@ export class SqliteGraphStore implements GraphStore {
     if (!Number.isFinite(schemaVersion) || treeSitterVersion === undefined || configHash === undefined) {
       return undefined
     }
-    return { schemaVersion, treeSitterVersion, configHash }
+    return { schemaVersion, treeSitterVersion, configHash, root: map.get('root') }
   }
 
   setMeta(meta: StoreMeta): void {
@@ -212,6 +212,7 @@ export class SqliteGraphStore implements GraphStore {
       stmt.run('schemaVersion', String(m.schemaVersion))
       stmt.run('treeSitterVersion', m.treeSitterVersion)
       stmt.run('configHash', m.configHash)
+      if (m.root !== undefined) stmt.run('root', m.root)
     })
     tx(meta)
   }

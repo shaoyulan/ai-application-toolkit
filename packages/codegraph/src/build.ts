@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { createRequire } from 'node:module'
-import { dirname, extname, join, posix, relative, sep } from 'node:path'
+import { dirname, extname, join, posix, relative, resolve, sep } from 'node:path'
 import { ToolkitError } from '@ai-application-toolkit/core'
 import { CodeGraph, type GraphEdge, type GraphNode, type SymbolNode } from './graph.js'
 import {
@@ -414,7 +414,8 @@ async function reconcileStore(
   const wanted: StoreMeta = {
     schemaVersion: STORE_SCHEMA_VERSION,
     treeSitterVersion: treeSitterVersion(),
-    configHash: configHash(options)
+    configHash: configHash(options),
+    root: resolve(options.dir)
   }
   const current = await store.meta()
   const compatible =
@@ -423,7 +424,11 @@ async function reconcileStore(
     current.treeSitterVersion === wanted.treeSitterVersion &&
     current.configHash === wanted.configHash
 
-  if (compatible) return store.getFileHashes()
+  if (compatible) {
+    // Keep the recorded repo path current if the index moved or is reused.
+    if (current.root !== wanted.root) await store.setMeta(wanted)
+    return store.getFileHashes()
+  }
 
   const previous = await store.getFileHashes()
   if (previous.size > 0) await store.deleteFiles([...previous.keys()])

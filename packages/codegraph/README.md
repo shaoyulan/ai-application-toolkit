@@ -41,6 +41,8 @@ npx @ai-application-toolkit/codegraph build ./src --lang typescript,python,cshar
 # (unchanged files are never re-parsed — a warm run is near-instant)
 npx @ai-application-toolkit/codegraph index ./src
 npx @ai-application-toolkit/codegraph status ./src   # freshness, size, counts
+npx @ai-application-toolkit/codegraph list ./src     # this repo's indexes
+npx @ai-application-toolkit/codegraph list --global  # every global-cache index
 
 # Serve the graph as an MCP server over HTTP …
 # (omit --port to auto-select a free port from 3000; a busy --port falls back to the next free one)

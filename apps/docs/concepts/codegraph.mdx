@@ -66,6 +66,7 @@ npx @ai-application-toolkit/codegraph build ./src --json > graph.json
 # Build/update a persistent, incremental index (see below)
 npx @ai-application-toolkit/codegraph index ./src
 npx @ai-application-toolkit/codegraph status ./src
+npx @ai-application-toolkit/codegraph list --global   # every global-cache index
 
 # Serve the graph as an MCP server, optionally behind a public tunnel.
 # serve loads the persistent index and watches for changes, hot-swapping the
@@ -87,7 +88,9 @@ falls back to a plain in-memory build. Force one with
 
 **Index location** defaults to `<dir>/.codegraph/index.db` (add `.codegraph/` to
 `.gitignore`). Override with `--index <path>`, the `CODEGRAPH_INDEX` env var, or
-`--global` to store it under `~/.cache/codegraph/` and keep the repo clean.
+`--global` to store it under `~/.cache/codegraph/` and keep the repo clean. Each
+index records the repo it belongs to, so `codegraph list` shows a repo's indexes
+and `codegraph list --global` lists every global-cache index with its project.
 
 ```bash
 npx @ai-application-toolkit/codegraph index ./src --global

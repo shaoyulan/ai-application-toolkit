@@ -27,7 +27,8 @@ const DRIVERS: { name: string; env: string; ok: boolean }[] = [
 const META: StoreMeta = {
   schemaVersion: STORE_SCHEMA_VERSION,
   treeSitterVersion: '0.26.10',
-  configHash: 'abc'
+  configHash: 'abc',
+  root: '/repos/example'
 }
 
 const record = (path: string, hash: string): FileRecord => ({

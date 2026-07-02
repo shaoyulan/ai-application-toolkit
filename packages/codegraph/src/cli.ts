@@ -18,7 +18,7 @@
  * lightweight and installs stay soft.
  */
 import { createHash } from 'node:crypto'
-import { existsSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, statSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -87,6 +87,7 @@ Usage:
   codegraph index  <dir> [options]   Build/update a persistent incremental index
   codegraph sync   <dir> [options]   Update the persistent index in place
   codegraph status <dir>             Show the persistent index's freshness
+  codegraph list   [dir] [--global]  List indexes for a repo, or all global ones
   codegraph serve  <dir> [options]   Serve the graph as an MCP server (HTTP)
 
 Options:
@@ -133,14 +134,16 @@ function buildOptions(dir: string, flags: Flags): BuildCodeGraphOptions {
  * `CODEGRAPH_INDEX` env > `--global` (a per-project file under the user cache
  * dir, keeping the repo clean) > the default `<dir>/.codegraph/index.db`.
  */
+const globalCacheDir = (): string => join(homedir(), '.cache', 'codegraph')
+const localIndexPath = (dir: string): string => join(dir, '.codegraph', 'index.db')
+const globalIndexPath = (dir: string): string =>
+  join(globalCacheDir(), `${createHash('sha1').update(dir).digest('hex').slice(0, 16)}.db`)
+
 function resolveIndexPath(dir: string, flags: Flags): string {
   if (flags.index) return resolve(process.cwd(), flags.index)
   if (process.env.CODEGRAPH_INDEX) return resolve(process.cwd(), process.env.CODEGRAPH_INDEX)
-  if (flags.global) {
-    const key = createHash('sha1').update(dir).digest('hex').slice(0, 16)
-    return join(homedir(), '.cache', 'codegraph', `${key}.db`)
-  }
-  return join(dir, '.codegraph', 'index.db')
+  if (flags.global) return globalIndexPath(dir)
+  return localIndexPath(dir)
 }
 
 function describeStats(stats: BuildStats): string {
@@ -212,6 +215,72 @@ async function cmdStatus(dir: string, flags: Flags): Promise<void> {
   } finally {
     store.close()
   }
+}
+
+interface IndexInfo {
+  path: string
+  root?: string
+  files: number
+  sizeMb: string
+  driver: string
+  error?: string
+}
+
+/** Read a summary of an index file, or undefined if it doesn't exist. */
+function readIndexInfo(dbPath: string): IndexInfo | undefined {
+  if (!existsSync(dbPath)) return undefined
+  const sizeMb = (statSync(dbPath).size / 1_000_000).toFixed(2)
+  try {
+    const store = openSqliteStore(dbPath)
+    try {
+      const meta = store.meta()
+      return { path: dbPath, root: meta?.root, files: store.getFileHashes().size, sizeMb, driver: store.driver }
+    } finally {
+      store.close()
+    }
+  } catch (error) {
+    return { path: dbPath, files: 0, sizeMb, driver: '?', error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+function printIndexInfo(info: IndexInfo): void {
+  if (info.error) {
+    console.log(`  ${info.path}\n    (unreadable: ${info.error})`)
+    return
+  }
+  console.log(`  ${info.root ?? '(unknown repo)'}`)
+  console.log(`    ${info.files} files, ${info.sizeMb} MB, ${info.driver} — ${info.path}`)
+}
+
+async function cmdList(dir: string | undefined, flags: Flags): Promise<void> {
+  if (flags.global) {
+    const cacheDir = globalCacheDir()
+    const files = existsSync(cacheDir) ? readdirSync(cacheDir).filter((f) => f.endsWith('.db')) : []
+    if (files.length === 0) {
+      console.log(`Global cache is empty (${cacheDir}).`)
+      return
+    }
+    console.log(`Global cache (${cacheDir}):`)
+    for (const f of files) {
+      const info = readIndexInfo(join(cacheDir, f))
+      if (info) printIndexInfo(info)
+    }
+    return
+  }
+
+  // Caches associated with a specific repo: local, global, and any explicit path.
+  const target = dir ?? process.cwd()
+  const candidates = new Set<string>([localIndexPath(target), globalIndexPath(target)])
+  if (flags.index) candidates.add(resolve(process.cwd(), flags.index))
+  if (process.env.CODEGRAPH_INDEX) candidates.add(resolve(process.cwd(), process.env.CODEGRAPH_INDEX))
+
+  const found = [...candidates].map(readIndexInfo).filter((i): i is IndexInfo => i !== undefined)
+  if (found.length === 0) {
+    console.log(`No index found for ${target}. Run "codegraph index ${dir ?? '.'}".`)
+    return
+  }
+  console.log(`Indexes for ${target}:`)
+  for (const info of found) printIndexInfo(info)
 }
 
 async function cmdServe(dir: string, flags: Flags): Promise<void> {
@@ -306,16 +375,18 @@ async function main(): Promise<void> {
     console.log(HELP)
     return
   }
-  const commands = ['build', 'index', 'sync', 'status', 'serve']
+  const commands = ['build', 'index', 'sync', 'status', 'serve', 'list']
   if (!commands.includes(command)) fail(`Unknown command: ${command}`)
-  if (!dirArg) fail(`${command} requires a <dir> argument`)
-  const dir = resolve(process.cwd(), dirArg)
+  // `list` works without a <dir> (e.g. `list --global`, or the current repo).
+  if (!dirArg && command !== 'list') fail(`${command} requires a <dir> argument`)
+  const dir = dirArg ? resolve(process.cwd(), dirArg) : undefined
 
   switch (command) {
-    case 'build': await cmdBuild(dir, flags); break
-    case 'index': case 'sync': await cmdIndex(dir, flags); break
-    case 'status': await cmdStatus(dir, flags); break
-    case 'serve': await cmdServe(dir, flags); break
+    case 'build': await cmdBuild(dir!, flags); break
+    case 'index': case 'sync': await cmdIndex(dir!, flags); break
+    case 'status': await cmdStatus(dir!, flags); break
+    case 'serve': await cmdServe(dir!, flags); break
+    case 'list': await cmdList(dir, flags); break
   }
 }
 
