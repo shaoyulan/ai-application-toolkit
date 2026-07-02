@@ -17,8 +17,10 @@
  * (persistence) are optional dependencies, imported lazily so `build` stays
  * lightweight and installs stay soft.
  */
+import { createHash } from 'node:crypto'
 import { existsSync, statSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { collectCapabilityTools } from '@ai-application-toolkit/capability'
 import { buildCodeGraph, type BuildCodeGraphOptions, type BuildStats } from './build.js'
@@ -38,27 +40,31 @@ interface Flags {
   help: boolean
   version: boolean
   force: boolean
+  global: boolean
   watch?: boolean
   port?: number
   path?: string
+  index?: string
   lang?: string[]
   limit?: number
 }
 
 function parseArgs(argv: string[]): Flags {
-  const flags: Flags = { positionals: [], json: false, tunnel: false, help: false, version: false, force: false }
+  const flags: Flags = { positionals: [], json: false, tunnel: false, help: false, version: false, force: false, global: false }
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
     switch (arg) {
       case '--json': flags.json = true; break
       case '--tunnel': flags.tunnel = true; break
       case '--force': flags.force = true; break
+      case '--global': flags.global = true; break
       case '--watch': flags.watch = true; break
       case '--no-watch': flags.watch = false; break
       case '--help': case '-h': flags.help = true; break
       case '--version': case '-v': flags.version = true; break
       case '--port': flags.port = Number(argv[++i]); break
       case '--path': flags.path = argv[++i]; break
+      case '--index': flags.index = argv[++i]; break
       case '--lang': flags.lang = argv[++i]?.split(',').map((s) => s.trim()).filter(Boolean); break
       case '--limit': flags.limit = Number(argv[++i]); break
       default:
@@ -88,6 +94,10 @@ Options:
   --limit <n>       (build) Number of ranked symbols to show (default 10)
   --lang <a,b>      Restrict to language ids (e.g. typescript,python,csharp)
   --force           (index) Rebuild from scratch, ignoring the cache
+  --index <path>    (index/sync/status/serve) Index file location
+                    (default <dir>/.codegraph/index.db; or set CODEGRAPH_INDEX)
+  --global          (index/sync/status/serve) Store the index in the user cache
+                    dir (~/.cache/codegraph/) instead of inside the project
   --port <n>        (serve) HTTP port. Omit to auto-select a free port from 3000;
                     if a given port is busy, the next free port is used.
   --path <p>        (serve) MCP endpoint path (default /mcp)
@@ -118,7 +128,20 @@ function buildOptions(dir: string, flags: Flags): BuildCodeGraphOptions {
   return { dir, ...(flags.lang ? { languages: flags.lang } : {}) }
 }
 
-const storePath = (dir: string): string => join(dir, '.codegraph', 'index.db')
+/**
+ * Where the SQLite index lives. Precedence: `--index <path>` >
+ * `CODEGRAPH_INDEX` env > `--global` (a per-project file under the user cache
+ * dir, keeping the repo clean) > the default `<dir>/.codegraph/index.db`.
+ */
+function resolveIndexPath(dir: string, flags: Flags): string {
+  if (flags.index) return resolve(process.cwd(), flags.index)
+  if (process.env.CODEGRAPH_INDEX) return resolve(process.cwd(), process.env.CODEGRAPH_INDEX)
+  if (flags.global) {
+    const key = createHash('sha1').update(dir).digest('hex').slice(0, 16)
+    return join(homedir(), '.cache', 'codegraph', `${key}.db`)
+  }
+  return join(dir, '.codegraph', 'index.db')
+}
 
 function describeStats(stats: BuildStats): string {
   const parts = [`parsed ${stats.parsed}`, `reused ${stats.reused}`]
@@ -148,12 +171,13 @@ async function cmdBuild(dir: string, flags: Flags): Promise<void> {
 }
 
 async function cmdIndex(dir: string, flags: Flags): Promise<void> {
-  const dbPath = storePath(dir)
+  const dbPath = resolveIndexPath(dir, flags)
   if (flags.force && existsSync(dbPath)) {
     const { rmSync } = await import('node:fs')
-    rmSync(join(dir, '.codegraph'), { recursive: true, force: true })
+    rmSync(dbPath, { force: true })
+    for (const suffix of ['-wal', '-shm']) rmSync(dbPath + suffix, { force: true })
   }
-  const store: GraphStore = openSqliteStore(dbPath)
+  const store = openSqliteStore(dbPath)
   try {
     let stats: BuildStats | undefined
     const graph = await buildCodeGraph({ ...buildOptions(dir, flags), store, onStats: (s) => (stats = s) })
@@ -161,25 +185,25 @@ async function cmdIndex(dir: string, flags: Flags): Promise<void> {
       `Indexed ${graph.files().length} files (${describeStats(stats!)}), ` +
         `${graph.symbols().length} symbols, ${graph.edges().length} edges.`
     )
-    console.log(`Index: ${dbPath}`)
+    console.log(`Index: ${dbPath} (${store.driver})`)
   } finally {
     store.close()
   }
 }
 
-async function cmdStatus(dir: string): Promise<void> {
-  const dbPath = storePath(dir)
+async function cmdStatus(dir: string, flags: Flags): Promise<void> {
+  const dbPath = resolveIndexPath(dir, flags)
   if (!existsSync(dbPath)) {
     console.log(`No index found at ${dbPath}. Run "codegraph index ${dir}" first.`)
     return
   }
-  const store: GraphStore = openSqliteStore(dbPath)
+  const store = openSqliteStore(dbPath)
   try {
-    const meta = await store.meta()
-    const hashes = await store.getFileHashes()
-    const graph = await store.loadGraph()
+    const meta = store.meta()
+    const hashes = store.getFileHashes()
+    const graph = store.loadGraph()
     const sizeMb = (statSync(dbPath).size / 1_000_000).toFixed(2)
-    console.log(`Index: ${dbPath} (${sizeMb} MB)`)
+    console.log(`Index: ${dbPath} (${sizeMb} MB, ${store.driver})`)
     console.log(`Cached files: ${hashes.size}`)
     if (graph) console.log(`Graph: ${graph.nodes.length} nodes, ${graph.edges.length} edges`)
     if (meta) {
@@ -199,9 +223,9 @@ async function cmdServe(dir: string, flags: Flags): Promise<void> {
   // works from an in-memory build (without incremental caching / hot-swap).
   let store: GraphStore | undefined
   try {
-    store = openSqliteStore(storePath(dir))
+    store = openSqliteStore(resolveIndexPath(dir, flags))
   } catch {
-    console.warn('better-sqlite3 not available — serving from an in-memory build (no incremental cache).')
+    console.warn('No SQLite backend available — serving from an in-memory build (no incremental cache).')
   }
 
   const options: BuildCodeGraphOptions = { ...buildOptions(dir, flags), ...(store ? { store } : {}) }
@@ -289,7 +313,7 @@ async function main(): Promise<void> {
   switch (command) {
     case 'build': await cmdBuild(dir, flags); break
     case 'index': case 'sync': await cmdIndex(dir, flags); break
-    case 'status': await cmdStatus(dir); break
+    case 'status': await cmdStatus(dir, flags); break
     case 'serve': await cmdServe(dir, flags); break
   }
 }

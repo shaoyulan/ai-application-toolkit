@@ -15,7 +15,7 @@ export {
   type StoreMeta,
   type FileRecord
 } from './store.js'
-export { SqliteGraphStore, openSqliteStore } from './store.sqlite.js'
+export { SqliteGraphStore, openSqliteStore, type SqliteDriver } from './store.sqlite.js'
 export { watchDirectory, type WatchOptions, type Watcher } from './watch.js'
 export {
   CodeGraph,

@@ -59,12 +59,31 @@ its license, so run it in an interactive terminal.
 
 ### Persistent index
 
-`index`, `sync` and `serve` keep a SQLite index at `<dir>/.codegraph/index.db`,
-caching per-file parse results keyed by content hash so only changed files are
-re-parsed. This needs the optional dependency `better-sqlite3` (it ships prebuilt
-binaries, so there is usually no native build step); if it is unavailable,
-`serve` degrades gracefully to a plain in-memory build. Add `.codegraph/` to your
-`.gitignore`.
+`index`, `sync` and `serve` keep a SQLite index that caches per-file parse
+results keyed by content hash, so only changed files are re-parsed (a warm
+rebuild is near-instant).
+
+**No install needed on modern Node.** The SQLite backend is chosen at runtime:
+
+1. `better-sqlite3` if it is installed (stable, quiet), else
+2. Node's built-in **`node:sqlite`** (Node ≥ 23.4) — zero dependency, else
+3. `serve` falls back to a plain in-memory build (no cache).
+
+So on recent Node it just works; on older Node run `npm i better-sqlite3`. Force
+a backend with `CODEGRAPH_SQLITE_DRIVER=node` (skip the native module) or
+`=better`.
+
+**Index location.** Defaults to `<dir>/.codegraph/index.db` (add `.codegraph/`
+to `.gitignore`). Override with:
+
+- `--index <path>` — an explicit file, or set `CODEGRAPH_INDEX`
+- `--global` — store under `~/.cache/codegraph/` (per project), keeping the repo
+  clean
+
+```bash
+npx @ai-application-toolkit/codegraph index ./src --global
+npx @ai-application-toolkit/codegraph serve ./src --index /tmp/mygraph.db
+```
 
 ## Library API
 

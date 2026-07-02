@@ -1,11 +1,15 @@
 /**
  * Embedded-SQLite implementation of {@link GraphStore}.
  *
- * `better-sqlite3` is an optional dependency loaded via `createRequire` (as the
- * parser loads its wasm), so importing the base library never pulls in the
- * native module — only code that actually opens a store does. Use
- * {@link openSqliteStore} rather than constructing this directly; it lazy-loads
- * the driver and gives a clear error if the optional dep is missing.
+ * The SQLite driver is chosen at runtime so persistence works with **zero
+ * install** on modern Node:
+ *   1. `better-sqlite3` if it is installed (stable, no experimental warning);
+ *   2. otherwise Node's built-in `node:sqlite` (Node ≥ 23.4, no dependency);
+ *   3. otherwise a clear error (older Node without better-sqlite3).
+ *
+ * Both are loaded lazily via `createRequire`, so importing the base library
+ * never pulls in a native module. Use {@link openSqliteStore} rather than
+ * constructing this directly.
  */
 import { mkdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -15,31 +19,115 @@ import type { EdgeKind, GraphNode, SerializedCodeGraph, SymbolKind } from './gra
 import type { FileFacts } from './parser.js'
 import type { FileRecord, GraphStore, StoreMeta } from './store.js'
 
-// Structural types for the bits of better-sqlite3 we use, so this file type-checks
-// without a hard dependency on @types/better-sqlite3 at consumers.
-type Statement = { run(...p: unknown[]): unknown; get(...p: unknown[]): unknown; all(...p: unknown[]): unknown[] }
-type Database = {
-  exec(sql: string): unknown
-  prepare(sql: string): Statement
-  transaction<T extends (...args: never[]) => unknown>(fn: T): T
-  pragma(sql: string): unknown
-  close(): void
-}
-type DatabaseConstructor = new (path: string) => Database
-
 const require = createRequire(import.meta.url)
 
-function loadDriver(): DatabaseConstructor {
-  try {
-    return require('better-sqlite3') as DatabaseConstructor
-  } catch (cause) {
-    throw new ToolkitError({
-      code: 'CODEGRAPH_SQLITE_NOT_INSTALLED',
-      message:
-        'Persistent indexing requires the optional dependency "better-sqlite3" (npm i better-sqlite3)',
-      cause
-    })
+/** Minimal, driver-agnostic SQL surface used by the store. */
+interface SqlStatement {
+  run(...params: unknown[]): unknown
+  get(...params: unknown[]): Record<string, unknown> | undefined
+  all(...params: unknown[]): Record<string, unknown>[]
+}
+interface SqlDb {
+  exec(sql: string): void
+  prepare(sql: string): SqlStatement
+  /** Wrap `fn` so its writes commit atomically (rollback on throw). */
+  transaction<A extends unknown[]>(fn: (...args: A) => void): (...args: A) => void
+  close(): void
+}
+
+/** Backend id, for observability. */
+export type SqliteDriver = 'better-sqlite3' | 'node:sqlite'
+
+function openBetterSqlite(path: string): SqlDb {
+  const Database = require('better-sqlite3') as new (p: string) => {
+    exec(sql: string): unknown
+    prepare(sql: string): SqlStatement
+    transaction<T extends (...a: never[]) => unknown>(fn: T): T
+    close(): void
   }
+  const db = new Database(path)
+  db.exec('PRAGMA journal_mode = WAL')
+  return {
+    exec: (sql) => void db.exec(sql),
+    prepare: (sql) => db.prepare(sql),
+    transaction: (fn) => db.transaction(fn as never) as never,
+    close: () => db.close()
+  }
+}
+
+let warningSuppressed = false
+/** Drop the noisy "SQLite is an experimental feature" warning once. */
+function suppressSqliteExperimentalWarning(): void {
+  if (warningSuppressed) return
+  warningSuppressed = true
+  const original = process.emitWarning.bind(process)
+  process.emitWarning = ((warning: string | Error, ...args: unknown[]) => {
+    const message = typeof warning === 'string' ? warning : (warning?.message ?? '')
+    if (message.includes('SQLite is an experimental feature')) return
+    return (original as (...a: unknown[]) => void)(warning, ...args)
+  }) as typeof process.emitWarning
+}
+
+function openNodeSqlite(path: string): SqlDb {
+  suppressSqliteExperimentalWarning()
+  const { DatabaseSync } = require('node:sqlite') as {
+    DatabaseSync: new (p: string) => {
+      exec(sql: string): unknown
+      prepare(sql: string): SqlStatement
+      close(): void
+    }
+  }
+  const db = new DatabaseSync(path)
+  db.exec('PRAGMA journal_mode = WAL')
+  const exec = (sql: string) => void db.exec(sql)
+  return {
+    exec,
+    prepare: (sql) => db.prepare(sql),
+    transaction:
+      (fn) =>
+      (...args) => {
+        exec('BEGIN')
+        try {
+          fn(...args)
+          exec('COMMIT')
+        } catch (error) {
+          exec('ROLLBACK')
+          throw error
+        }
+      },
+    close: () => db.close()
+  }
+}
+
+/**
+ * Open a SQLite database, preferring an installed better-sqlite3 over the
+ * built-in node:sqlite. Set `CODEGRAPH_SQLITE_DRIVER=node` to force the built-in
+ * (skip the native module) or `=better` to require better-sqlite3.
+ */
+function openDb(path: string): { db: SqlDb; driver: SqliteDriver } {
+  const forced = process.env.CODEGRAPH_SQLITE_DRIVER
+  if (forced !== 'node') {
+    try {
+      return { db: openBetterSqlite(path), driver: 'better-sqlite3' }
+    } catch (cause) {
+      if (forced === 'better') throw sqliteUnavailable(cause)
+      // Not installed — fall through to the built-in driver.
+    }
+  }
+  try {
+    return { db: openNodeSqlite(path), driver: 'node:sqlite' }
+  } catch (cause) {
+    throw sqliteUnavailable(cause)
+  }
+}
+
+function sqliteUnavailable(cause: unknown): ToolkitError {
+  return new ToolkitError({
+    code: 'CODEGRAPH_SQLITE_NOT_AVAILABLE',
+    message:
+      'Persistent indexing needs Node >= 23.4 (built-in node:sqlite) or the optional dependency "better-sqlite3" (npm i better-sqlite3).',
+    cause
+  })
 }
 
 const SCHEMA = `
@@ -74,13 +162,15 @@ CREATE INDEX IF NOT EXISTS edges_kind ON edges (kind);
 
 /** SQLite-backed parse cache + resolved-graph store. */
 export class SqliteGraphStore implements GraphStore {
-  private readonly db: Database
+  private readonly db: SqlDb
+  /** Which SQLite backend is in use. */
+  readonly driver: SqliteDriver
 
   constructor(dbPath: string) {
     mkdirSync(dirname(dbPath), { recursive: true })
-    const Database = loadDriver()
-    this.db = new Database(dbPath)
-    this.db.pragma('journal_mode = WAL')
+    const opened = openDb(dbPath)
+    this.db = opened.db
+    this.driver = opened.driver
     this.db.exec(SCHEMA)
   }
 
@@ -172,7 +262,7 @@ export class SqliteGraphStore implements GraphStore {
   }
 
   loadGraph(): SerializedCodeGraph | undefined {
-    const nodeRows = this.db.prepare('SELECT * FROM nodes').all() as NodeRow[]
+    const nodeRows = this.db.prepare('SELECT * FROM nodes').all() as unknown as NodeRow[]
     if (nodeRows.length === 0) return undefined
     const nodes: GraphNode[] = nodeRows.map((r) =>
       r.kind === 'symbol'
