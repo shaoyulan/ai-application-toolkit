@@ -25,6 +25,22 @@ Python; C#, Java, Go and Rust use namespace/module imports, so cross-file
 `imports` edges are not inferred for them — but `contains` and (name-based)
 `references` edges are.
 
+## Platform support
+
+Runs on **macOS, Windows and Linux** (Ubuntu included). Parsing is
+WebAssembly-based, so there is no native compile step, and paths are handled
+cross-platform.
+
+- **Node** `>=20`. The persistent index prefers `better-sqlite3` if installed,
+  otherwise Node's built-in `node:sqlite` (Node `>=23.4`); on older Node without
+  `better-sqlite3`, `serve` falls back to an in-memory build (no cache).
+- **File watching** (`serve` hot-reload) uses recursive `fs.watch` — native on
+  macOS and Windows. On Linux it is not universally supported; if it can't
+  start, `serve` still runs and prints a notice — re-run `codegraph sync` to
+  refresh the index after edits.
+- `--tunnel` downloads `cloudflared` (via `untun`) on first use; it supports all
+  three platforms.
+
 ## CLI (npx)
 
 No install needed — run any command with `npx`.
