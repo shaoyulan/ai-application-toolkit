@@ -129,6 +129,10 @@ interface ScannedFile {
   relPath: string
   absPath: string
   spec: LanguageSpec
+  /** File size in bytes (from stat). */
+  size: number
+  /** Modification time in ms (from stat), used for cheap staleness checks. */
+  mtimeMs: number
 }
 
 async function walk(options: BuildCodeGraphOptions): Promise<ScannedFile[]> {
@@ -136,6 +140,7 @@ async function walk(options: BuildCodeGraphOptions): Promise<ScannedFile[]> {
     options.replaceIgnore ? (options.ignore ?? []) : [...DEFAULT_IGNORE, ...(options.ignore ?? [])]
   )
   const languageFilter = options.languages ? new Set(options.languages) : undefined
+  const maxBytes = options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES
   const files: ScannedFile[] = []
 
   async function recurse(absDir: string): Promise<void> {
@@ -150,7 +155,18 @@ async function walk(options: BuildCodeGraphOptions): Promise<ScannedFile[]> {
         const spec = languageForExtension(extname(entry.name))
         if (!spec) continue
         if (languageFilter && !languageFilter.has(spec.id)) continue
-        files.push({ relPath: toPosix(relative(options.dir, abs)), absPath: abs, spec })
+        // stat here so oversize files are excluded from the scan set entirely —
+        // they must not leak into fileSet (else they leave stale cache rows and
+        // dangling import edges to a file node that is never created).
+        const info = await stat(abs)
+        if (info.size > maxBytes) continue
+        files.push({
+          relPath: toPosix(relative(options.dir, abs)),
+          absPath: abs,
+          spec,
+          size: info.size,
+          mtimeMs: info.mtimeMs
+        })
       }
     }
   }
@@ -255,7 +271,6 @@ export async function buildCodeGraph(options: BuildCodeGraphOptions): Promise<Co
     })
   }
 
-  const maxBytes = options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES
   const store = options.store
   const scanned = await walk(options)
   const fileSet = new Set(scanned.map((f) => f.relPath))
@@ -278,7 +293,6 @@ export async function buildCodeGraph(options: BuildCodeGraphOptions): Promise<Co
   for (const file of scanned) {
     options.signal?.throwIfAborted()
     const source = await readFile(file.absPath, 'utf8')
-    if (Buffer.byteLength(source) > maxBytes) continue
     specByPath.set(file.relPath, file.spec)
     const hash = hashSource(source)
 
@@ -400,6 +414,16 @@ export async function buildCodeGraph(options: BuildCodeGraphOptions): Promise<Co
 
   options.onStats?.({ files: fileBuilds.length, parsed, reused, deleted })
   return graph
+}
+
+/**
+ * Rebuild a {@link CodeGraph} from a store's persisted graph without walking or
+ * re-parsing the repo — the cheap "reopen an existing index" path. Returns
+ * `undefined` if the store holds no graph yet.
+ */
+export async function loadCodeGraph(store: GraphStore): Promise<CodeGraph | undefined> {
+  const data = await store.loadGraph()
+  return data ? CodeGraph.fromJSON(data) : undefined
 }
 
 /**

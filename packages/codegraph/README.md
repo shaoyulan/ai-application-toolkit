@@ -142,12 +142,13 @@ agent) can then explore the codebase remotely:
 
 ```ts
 import { startHttpMcpServer } from '@ai-application-toolkit/mcp'
+import { collectCapabilityTools } from '@ai-application-toolkit/capability'
 
 const graph = await buildCodeGraph({ dir: './src' })
 await startHttpMcpServer({
   name: 'codegraph-mcp',
   version: '1.0.0',
-  tools: defineCodegraphCapability(graph).tools,
+  tools: collectCapabilityTools([defineCodegraphCapability(graph)]),
   port: 3000
 })
 // Streamable HTTP at http://localhost:3000/mcp

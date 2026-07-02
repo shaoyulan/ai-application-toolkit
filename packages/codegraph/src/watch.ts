@@ -29,6 +29,9 @@ export interface WatchOptions {
 }
 
 export interface Watcher {
+  /** Whether the underlying watch actually started (false if the platform
+   * rejected recursive watching — callers should fall back to manual `sync`). */
+  started: boolean
   close(): void
 }
 
@@ -115,6 +118,7 @@ export function watchDirectory(
   }
 
   return {
+    started: watcher !== undefined,
     close() {
       debouncer.cancel()
       watcher?.close()

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { SerializedCodeGraph } from './graph.js'
 import type { FileRecord, StoreMeta } from './store.js'
 import { STORE_SCHEMA_VERSION } from './store.js'
-import { SqliteGraphStore } from './store.sqlite.js'
+import { SqliteGraphStore, withSqliteStore } from './store.sqlite.js'
 
 const require = createRequire(import.meta.url)
 const available = (mod: string): boolean => {
@@ -146,5 +146,24 @@ describe('openSqliteStore error handling', () => {
     const path = join(dir, 'notadb.db')
     await writeFile(path, 'this is not a database')
     expect(() => new SqliteGraphStore(path)).toThrow(/not be a codegraph index or may be corrupt/)
+  })
+
+  it('withSqliteStore opens, runs, and closes (file reusable afterwards)', async () => {
+    const path = join(dir, 'w.db')
+    const count = await withSqliteStore(path, (store) => {
+      store.putFacts([
+        {
+          path: 'a.ts',
+          language: 'typescript',
+          hash: 'h',
+          facts: { definitions: [], references: [], imports: [] }
+        }
+      ])
+      return store.getFileHashes().size
+    })
+    expect(count).toBe(1)
+    // If close() ran, the file is not locked and reopens cleanly.
+    const reopened = await withSqliteStore(path, (store) => store.getFileHashes().size)
+    expect(reopened).toBe(1)
   })
 })

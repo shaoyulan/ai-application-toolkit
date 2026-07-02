@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile, unlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { buildCodeGraph, type BuildStats } from './build.js'
+import { buildCodeGraph, loadCodeGraph, type BuildStats } from './build.js'
 import type { SerializedCodeGraph } from './graph.js'
 import { SqliteGraphStore } from './store.sqlite.js'
 
@@ -81,5 +81,21 @@ describe('incremental build', () => {
     let stats: BuildStats | undefined
     await buildCodeGraph({ dir, store, languages: ['typescript'], onStats: (s) => (stats = s) })
     expect(stats).toMatchObject({ parsed: 2, reused: 0 })
+  })
+
+  it('loadCodeGraph reopens the persisted graph without re-walking', async () => {
+    const built = (await build()).graph
+    const reopened = await loadCodeGraph(store)
+    expect(reopened).toBeDefined()
+    expect(normalize(reopened!.toJSON())).toEqual(normalize(built.toJSON()))
+  })
+
+  it('excludes files over maxFileBytes with no dangling nodes or edges', async () => {
+    await writeFile(join(dir, 'big.ts'), `export function big() { return ${'0'.repeat(5000)} }\n`)
+    await writeFile(join(dir, 'importer.ts'), "import { big } from './big'\nexport const x = big\n")
+    const graph = await buildCodeGraph({ dir, maxFileBytes: 500 })
+    // big.ts exceeds the limit → no file node and no edge points at it.
+    expect(graph.getNode('file:big.ts')).toBeUndefined()
+    expect(graph.edges().some((e) => e.to === 'file:big.ts')).toBe(false)
   })
 })

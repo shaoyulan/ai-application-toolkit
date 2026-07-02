@@ -85,7 +85,7 @@ const HELP = `codegraph — turn a folder into a multi-language code graph
 Usage:
   codegraph build  <dir> [options]   Build the graph and print a summary (in-memory)
   codegraph index  <dir> [options]   Build/update a persistent incremental index
-  codegraph sync   <dir> [options]   Update the persistent index in place
+  codegraph sync   <dir> [options]   Incrementally update an existing index (errors if none)
   codegraph status <dir>             Show the persistent index's freshness
   codegraph list   [dir] [--global]  List indexes for a repo, or all global ones
   codegraph serve  <dir> [options]   Serve the graph as an MCP server (HTTP)
@@ -140,8 +140,14 @@ const globalIndexPath = (dir: string): string =>
   join(globalCacheDir(), `${createHash('sha1').update(dir).digest('hex').slice(0, 16)}.db`)
 
 function resolveIndexPath(dir: string, flags: Flags): string {
-  if (flags.index) return resolve(process.cwd(), flags.index)
-  if (process.env.CODEGRAPH_INDEX) return resolve(process.cwd(), process.env.CODEGRAPH_INDEX)
+  if (flags.index) {
+    if (flags.global) console.warn('--global ignored: --index takes precedence.')
+    return resolve(process.cwd(), flags.index)
+  }
+  if (process.env.CODEGRAPH_INDEX) {
+    if (flags.global) console.warn('--global ignored: CODEGRAPH_INDEX is set.')
+    return resolve(process.cwd(), process.env.CODEGRAPH_INDEX)
+  }
   if (flags.global) return globalIndexPath(dir)
   return localIndexPath(dir)
 }
@@ -153,6 +159,7 @@ function describeStats(stats: BuildStats): string {
 }
 
 async function cmdBuild(dir: string, flags: Flags): Promise<void> {
+  const started = Date.now()
   const graph = await buildCodeGraph(buildOptions(dir, flags))
 
   if (flags.json) {
@@ -163,7 +170,8 @@ async function cmdBuild(dir: string, flags: Flags): Promise<void> {
   const langs = new Map<string, number>()
   for (const f of graph.files()) langs.set(f.language, (langs.get(f.language) ?? 0) + 1)
 
-  console.log(`Indexed ${graph.files().length} files, ${graph.symbols().length} symbols, ${graph.edges().length} edges.`)
+  const elapsed = ((Date.now() - started) / 1000).toFixed(2)
+  console.log(`Indexed ${graph.files().length} files, ${graph.symbols().length} symbols, ${graph.edges().length} edges in ${elapsed}s.`)
   console.log('Languages: ' + [...langs].map(([l, n]) => `${l}=${n}`).join(', '))
   console.log(`\nTop ${flags.limit ?? 10} symbols (PageRank):`)
   for (const { node, score } of graph.rankedContext({ kind: 'symbol', limit: flags.limit ?? 10 })) {
@@ -171,11 +179,16 @@ async function cmdBuild(dir: string, flags: Flags): Promise<void> {
       console.log(`  ${score.toFixed(4)}  ${node.symbolKind.padEnd(9)} ${node.name}  [${node.file}:${node.startLine}]`)
     }
   }
+  console.log('\n`build` is a one-shot in-memory scan. For a persistent, incremental index, use `codegraph index`.')
 }
 
-async function cmdIndex(dir: string, flags: Flags): Promise<void> {
+async function cmdIndex(dir: string, flags: Flags, mode: 'index' | 'sync'): Promise<void> {
   const dbPath = resolveIndexPath(dir, flags)
-  if (flags.force && existsSync(dbPath)) {
+  if (mode === 'sync') {
+    if (!existsSync(dbPath)) fail(`No index at ${dbPath}. Run "codegraph index ${dir}" first.`)
+    if (flags.force) fail('--force is only valid for `index`, not `sync`')
+  }
+  if (mode === 'index' && flags.force && existsSync(dbPath)) {
     const { rmSync } = await import('node:fs')
     rmSync(dbPath, { force: true })
     for (const suffix of ['-wal', '-shm']) rmSync(dbPath + suffix, { force: true })
@@ -337,7 +350,11 @@ async function cmdServe(dir: string, flags: Flags): Promise<void> {
       },
       { onError: (error) => console.warn('watch:', error instanceof Error ? error.message : error) }
     )
-    console.log('Watching for changes… (--no-watch to disable)')
+    if (watcher.started) {
+      console.log('Watching for changes… (--no-watch to disable)')
+    } else {
+      console.warn('File watching is unavailable on this platform — run `codegraph sync` to refresh the index.')
+    }
   }
 
   let tunnel: { getURL(): Promise<string>; close(): Promise<void> } | undefined
@@ -383,7 +400,8 @@ async function main(): Promise<void> {
 
   switch (command) {
     case 'build': await cmdBuild(dir!, flags); break
-    case 'index': case 'sync': await cmdIndex(dir!, flags); break
+    case 'index': await cmdIndex(dir!, flags, 'index'); break
+    case 'sync': await cmdIndex(dir!, flags, 'sync'); break
     case 'status': await cmdStatus(dir!, flags); break
     case 'serve': await cmdServe(dir!, flags); break
     case 'list': await cmdList(dir, flags); break

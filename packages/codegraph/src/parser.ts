@@ -241,16 +241,25 @@ function unquote(text: string): string {
 export async function parseFile(spec: LanguageSpec, source: string): Promise<FileFacts> {
   const { language, queries } = await compileLanguage(spec)
 
-  const parser = new Parser()
-  parser.setLanguage(language)
-  const tree = parser.parse(source)
   const facts: FileFacts = { definitions: [], references: [], imports: [] }
+  const parser = new Parser()
+  let tree: ReturnType<Parser['parse']> = null
+  try {
+    parser.setLanguage(language)
+    tree = parser.parse(source)
+    if (!tree) return facts
 
-  if (!tree) {
-    parser.delete()
+    extractFacts(queries, tree, facts)
     return facts
+  } finally {
+    // Always release wasm-heap objects, even if parsing/extraction throws.
+    tree?.delete()
+    parser.delete()
   }
+}
 
+/** Runs the tag queries over the tree and fills `facts`. */
+function extractFacts(queries: Query[], tree: NonNullable<ReturnType<Parser['parse']>>, facts: FileFacts): void {
   for (const query of queries) {
     for (const match of query.matches(tree.rootNode)) {
       let nameNode: Node | undefined
@@ -294,8 +303,4 @@ export async function parseFile(spec: LanguageSpec, source: string): Promise<Fil
       }
     }
   }
-
-  tree.delete()
-  parser.delete()
-  return facts
 }

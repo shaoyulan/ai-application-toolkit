@@ -65,17 +65,20 @@ function betterSqliteLoader(): DriverLoader {
   }
 }
 
-let warningSuppressed = false
-/** Drop the noisy "SQLite is an experimental feature" warning once. */
-function suppressSqliteExperimentalWarning(): void {
-  if (warningSuppressed) return
-  warningSuppressed = true
-  const original = process.emitWarning.bind(process)
+/** Load a module with the "SQLite is an experimental feature" warning muted,
+ * restoring `process.emitWarning` immediately so no global patch leaks. */
+function requireQuietly<T>(id: string): T {
+  const original = process.emitWarning
   process.emitWarning = ((warning: string | Error, ...args: unknown[]) => {
     const message = typeof warning === 'string' ? warning : (warning?.message ?? '')
     if (message.includes('SQLite is an experimental feature')) return
-    return (original as (...a: unknown[]) => void)(warning, ...args)
+    return (original as (...a: unknown[]) => void).call(process, warning, ...args)
   }) as typeof process.emitWarning
+  try {
+    return require(id) as T
+  } finally {
+    process.emitWarning = original
+  }
 }
 
 function nodeSqliteLoader(): DriverLoader {
@@ -85,8 +88,7 @@ function nodeSqliteLoader(): DriverLoader {
     close(): void
   }
   try {
-    suppressSqliteExperimentalWarning()
-    ;({ DatabaseSync } = require('node:sqlite'))
+    ;({ DatabaseSync } = requireQuietly<{ DatabaseSync: typeof DatabaseSync }>('node:sqlite'))
   } catch {
     return undefined // built-in not available (Node < 23.4, or flag required)
   }
@@ -325,4 +327,20 @@ interface NodeRow {
 /** Open (creating if needed) a SQLite-backed graph store at `dbPath`. */
 export function openSqliteStore(dbPath: string): SqliteGraphStore {
   return new SqliteGraphStore(dbPath)
+}
+
+/**
+ * Open a store, run `fn`, and always close it — the leak-safe way to use a store
+ * for a one-off task without managing `close()` by hand.
+ */
+export async function withSqliteStore<T>(
+  dbPath: string,
+  fn: (store: SqliteGraphStore) => T | Promise<T>
+): Promise<T> {
+  const store = openSqliteStore(dbPath)
+  try {
+    return await fn(store)
+  } finally {
+    store.close()
+  }
 }

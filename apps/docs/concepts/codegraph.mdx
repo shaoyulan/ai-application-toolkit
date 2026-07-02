@@ -98,18 +98,22 @@ npx @ai-application-toolkit/codegraph serve ./src --index /tmp/mygraph.db
 ```
 
 From the library, pass a store to `buildCodeGraph` for the same incremental
-caching:
+caching. `withSqliteStore` opens and closes the store for you (no manual
+`close()` to leak):
 
 ```ts
-import { buildCodeGraph, openSqliteStore } from '@ai-application-toolkit/codegraph'
+import { buildCodeGraph, loadCodeGraph, withSqliteStore } from '@ai-application-toolkit/codegraph'
 
-const store = openSqliteStore('./.codegraph/index.db')
-const graph = await buildCodeGraph({
-  dir: './src',
-  store,
-  onStats: (s) => console.log(`parsed ${s.parsed}, reused ${s.reused}`)
+const graph = await withSqliteStore('./.codegraph/index.db', async (store) => {
+  // Reopen the existing index cheaply (no walk/parse) when nothing changed…
+  const cached = await loadCodeGraph(store)
+  // …or (re)build incrementally — unchanged files are served from cache:
+  return buildCodeGraph({
+    dir: './src',
+    store,
+    onStats: (s) => console.log(`parsed ${s.parsed}, reused ${s.reused}`)
+  })
 })
-store.close()
 ```
 
 Runnable examples: [`codegraph.ts`](/examples), [`codegraph-qa.ts`](/examples)
