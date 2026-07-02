@@ -2,21 +2,34 @@
 /**
  * codegraph CLI — `npx @ai-application-toolkit/codegraph <command>`.
  *
- *   codegraph build <dir> [--json] [--lang ts,py] [--limit N]
- *   codegraph serve <dir> [--port 3000] [--path /mcp] [--tunnel] [--lang …]
+ *   codegraph build  <dir> [--json] [--lang ts,py] [--limit N]
+ *   codegraph index  <dir> [--lang …] [--force]      Persist an incremental index
+ *   codegraph sync   <dir> [--lang …]                Update the index in place
+ *   codegraph status <dir>                           Show index freshness
+ *   codegraph serve  <dir> [--port 3000] [--path /mcp] [--tunnel] [--no-watch] [--lang …]
  *
- * `serve` exposes the graph as an MCP server over Streamable HTTP. `--tunnel`
- * additionally publishes a public URL via untun (Cloudflare quick tunnel).
+ * `index`/`sync`/`serve` persist a SQLite index under `<dir>/.codegraph/` so
+ * unchanged files are never re-parsed. `serve` exposes the graph as an MCP server
+ * over Streamable HTTP and (by default) watches for changes and hot-swaps the
+ * served graph. `--tunnel` publishes a public URL via untun.
  *
- * `@ai-application-toolkit/mcp` (for serve) and `untun` (for --tunnel) are
- * optional dependencies, imported lazily so `build` stays lightweight.
+ * `@ai-application-toolkit/mcp` (serve), `untun` (--tunnel) and `better-sqlite3`
+ * (persistence) are optional dependencies, imported lazily so `build` stays
+ * lightweight and installs stay soft.
  */
+import { createHash } from 'node:crypto'
+import { existsSync, readdirSync, statSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { homedir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { collectCapabilityTools } from '@ai-application-toolkit/capability'
-import { buildCodeGraph, type BuildCodeGraphOptions } from './build.js'
+import { buildCodeGraph, loadCodeGraph, type BuildCodeGraphOptions, type BuildStats } from './build.js'
+import type { CodeGraph } from './graph.js'
 import { findAvailablePort } from './port.js'
+import type { GraphStore } from './store.js'
+import { openSqliteStore } from './store.sqlite.js'
 import { defineCodegraphCapability } from './tools.js'
+import { watchDirectory, type Watcher } from './watch.js'
 
 const DEFAULT_PORT = 3000
 
@@ -26,23 +39,32 @@ interface Flags {
   tunnel: boolean
   help: boolean
   version: boolean
+  force: boolean
+  global: boolean
+  watch?: boolean
   port?: number
   path?: string
+  index?: string
   lang?: string[]
   limit?: number
 }
 
 function parseArgs(argv: string[]): Flags {
-  const flags: Flags = { positionals: [], json: false, tunnel: false, help: false, version: false }
+  const flags: Flags = { positionals: [], json: false, tunnel: false, help: false, version: false, force: false, global: false }
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
     switch (arg) {
       case '--json': flags.json = true; break
       case '--tunnel': flags.tunnel = true; break
+      case '--force': flags.force = true; break
+      case '--global': flags.global = true; break
+      case '--watch': flags.watch = true; break
+      case '--no-watch': flags.watch = false; break
       case '--help': case '-h': flags.help = true; break
       case '--version': case '-v': flags.version = true; break
       case '--port': flags.port = Number(argv[++i]); break
       case '--path': flags.path = argv[++i]; break
+      case '--index': flags.index = argv[++i]; break
       case '--lang': flags.lang = argv[++i]?.split(',').map((s) => s.trim()).filter(Boolean); break
       case '--limit': flags.limit = Number(argv[++i]); break
       default:
@@ -61,23 +83,37 @@ function fail(message: string): never {
 const HELP = `codegraph — turn a folder into a multi-language code graph
 
 Usage:
-  codegraph build <dir> [options]    Build the graph and print a summary
-  codegraph serve <dir> [options]    Serve the graph as an MCP server (HTTP)
+  codegraph build  <dir> [options]   Build the graph and print a summary (in-memory)
+  codegraph index  <dir> [options]   Build/update a persistent incremental index
+  codegraph sync   <dir> [options]   Incrementally update an existing index (errors if none)
+  codegraph status <dir>             Show the persistent index's freshness
+  codegraph list   [dir] [--global]  List indexes for a repo, or all global ones
+  codegraph serve  <dir> [options]   Serve the graph as an MCP server (HTTP)
 
 Options:
   --json            (build) Print the full graph as JSON to stdout
   --limit <n>       (build) Number of ranked symbols to show (default 10)
   --lang <a,b>      Restrict to language ids (e.g. typescript,python,csharp)
+  --force           (index) Rebuild from scratch, ignoring the cache
+  --index <path>    (index/sync/status/serve) Index file location
+                    (default <dir>/.codegraph/index.db; or set CODEGRAPH_INDEX)
+  --global          (index/sync/status/serve) Store the index in the user cache
+                    dir (~/.cache/codegraph/) instead of inside the project
   --port <n>        (serve) HTTP port. Omit to auto-select a free port from 3000;
                     if a given port is busy, the next free port is used.
   --path <p>        (serve) MCP endpoint path (default /mcp)
   --tunnel          (serve) Publish a public URL via untun (Cloudflare tunnel)
+  --no-watch        (serve) Do not watch for changes / hot-swap the graph
   -h, --help        Show this help
   -v, --version     Show version
 
+Persistence: index/sync/serve store a SQLite index under <dir>/.codegraph/
+(requires the optional dependency "better-sqlite3"). Serve falls back to an
+in-memory build if it is unavailable.
+
 Examples:
-  npx @ai-application-toolkit/codegraph build ./src
-  npx @ai-application-toolkit/codegraph build ./src --json > graph.json
+  npx @ai-application-toolkit/codegraph index ./src
+  npx @ai-application-toolkit/codegraph status ./src
   npx @ai-application-toolkit/codegraph serve ./src --port 3030 --tunnel`
 
 async function readVersion(): Promise<string> {
@@ -93,7 +129,37 @@ function buildOptions(dir: string, flags: Flags): BuildCodeGraphOptions {
   return { dir, ...(flags.lang ? { languages: flags.lang } : {}) }
 }
 
+/**
+ * Where the SQLite index lives. Precedence: `--index <path>` >
+ * `CODEGRAPH_INDEX` env > `--global` (a per-project file under the user cache
+ * dir, keeping the repo clean) > the default `<dir>/.codegraph/index.db`.
+ */
+const globalCacheDir = (): string => join(homedir(), '.cache', 'codegraph')
+const localIndexPath = (dir: string): string => join(dir, '.codegraph', 'index.db')
+const globalIndexPath = (dir: string): string =>
+  join(globalCacheDir(), `${createHash('sha1').update(dir).digest('hex').slice(0, 16)}.db`)
+
+function resolveIndexPath(dir: string, flags: Flags): string {
+  if (flags.index) {
+    if (flags.global) console.warn('--global ignored: --index takes precedence.')
+    return resolve(process.cwd(), flags.index)
+  }
+  if (process.env.CODEGRAPH_INDEX) {
+    if (flags.global) console.warn('--global ignored: CODEGRAPH_INDEX is set.')
+    return resolve(process.cwd(), process.env.CODEGRAPH_INDEX)
+  }
+  if (flags.global) return globalIndexPath(dir)
+  return localIndexPath(dir)
+}
+
+function describeStats(stats: BuildStats): string {
+  const parts = [`parsed ${stats.parsed}`, `reused ${stats.reused}`]
+  if (stats.deleted > 0) parts.push(`removed ${stats.deleted}`)
+  return parts.join(', ')
+}
+
 async function cmdBuild(dir: string, flags: Flags): Promise<void> {
+  const started = Date.now()
   const graph = await buildCodeGraph(buildOptions(dir, flags))
 
   if (flags.json) {
@@ -104,7 +170,8 @@ async function cmdBuild(dir: string, flags: Flags): Promise<void> {
   const langs = new Map<string, number>()
   for (const f of graph.files()) langs.set(f.language, (langs.get(f.language) ?? 0) + 1)
 
-  console.log(`Indexed ${graph.files().length} files, ${graph.symbols().length} symbols, ${graph.edges().length} edges.`)
+  const elapsed = ((Date.now() - started) / 1000).toFixed(2)
+  console.log(`Indexed ${graph.files().length} files, ${graph.symbols().length} symbols, ${graph.edges().length} edges in ${elapsed}s.`)
   console.log('Languages: ' + [...langs].map(([l, n]) => `${l}=${n}`).join(', '))
   console.log(`\nTop ${flags.limit ?? 10} symbols (PageRank):`)
   for (const { node, score } of graph.rankedContext({ kind: 'symbol', limit: flags.limit ?? 10 })) {
@@ -112,6 +179,121 @@ async function cmdBuild(dir: string, flags: Flags): Promise<void> {
       console.log(`  ${score.toFixed(4)}  ${node.symbolKind.padEnd(9)} ${node.name}  [${node.file}:${node.startLine}]`)
     }
   }
+  console.log('\n`build` is a one-shot in-memory scan. For a persistent, incremental index, use `codegraph index`.')
+}
+
+async function cmdIndex(dir: string, flags: Flags, mode: 'index' | 'sync'): Promise<void> {
+  const dbPath = resolveIndexPath(dir, flags)
+  if (mode === 'sync') {
+    if (!existsSync(dbPath)) fail(`No index at ${dbPath}. Run "codegraph index ${dir}" first.`)
+    if (flags.force) fail('--force is only valid for `index`, not `sync`')
+  }
+  if (mode === 'index' && flags.force && existsSync(dbPath)) {
+    const { rmSync } = await import('node:fs')
+    rmSync(dbPath, { force: true })
+    for (const suffix of ['-wal', '-shm']) rmSync(dbPath + suffix, { force: true })
+  }
+  const store = openSqliteStore(dbPath)
+  try {
+    let stats: BuildStats | undefined
+    const graph = await buildCodeGraph({ ...buildOptions(dir, flags), store, onStats: (s) => (stats = s) })
+    console.log(
+      `Indexed ${graph.files().length} files (${describeStats(stats!)}), ` +
+        `${graph.symbols().length} symbols, ${graph.edges().length} edges.`
+    )
+    console.log(`Index: ${dbPath} (${store.driver})`)
+  } finally {
+    store.close()
+  }
+}
+
+async function cmdStatus(dir: string, flags: Flags): Promise<void> {
+  const dbPath = resolveIndexPath(dir, flags)
+  if (!existsSync(dbPath)) {
+    console.log(`No index found at ${dbPath}. Run "codegraph index ${dir}" first.`)
+    return
+  }
+  const store = openSqliteStore(dbPath)
+  try {
+    const meta = store.meta()
+    const hashes = store.getFileHashes()
+    const graph = store.loadGraph()
+    const sizeMb = (statSync(dbPath).size / 1_000_000).toFixed(2)
+    console.log(`Index: ${dbPath} (${sizeMb} MB, ${store.driver})`)
+    console.log(`Cached files: ${hashes.size}`)
+    if (graph) console.log(`Graph: ${graph.nodes.length} nodes, ${graph.edges.length} edges`)
+    if (meta) {
+      console.log(`Schema v${meta.schemaVersion}, tree-sitter ${meta.treeSitterVersion}`)
+    }
+  } finally {
+    store.close()
+  }
+}
+
+interface IndexInfo {
+  path: string
+  root?: string
+  files: number
+  sizeMb: string
+  driver: string
+  error?: string
+}
+
+/** Read a summary of an index file, or undefined if it doesn't exist. */
+function readIndexInfo(dbPath: string): IndexInfo | undefined {
+  if (!existsSync(dbPath)) return undefined
+  const sizeMb = (statSync(dbPath).size / 1_000_000).toFixed(2)
+  try {
+    const store = openSqliteStore(dbPath)
+    try {
+      const meta = store.meta()
+      return { path: dbPath, root: meta?.root, files: store.getFileHashes().size, sizeMb, driver: store.driver }
+    } finally {
+      store.close()
+    }
+  } catch (error) {
+    return { path: dbPath, files: 0, sizeMb, driver: '?', error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+function printIndexInfo(info: IndexInfo): void {
+  if (info.error) {
+    console.log(`  ${info.path}\n    (unreadable: ${info.error})`)
+    return
+  }
+  console.log(`  ${info.root ?? '(unknown repo)'}`)
+  console.log(`    ${info.files} files, ${info.sizeMb} MB, ${info.driver} — ${info.path}`)
+}
+
+async function cmdList(dir: string | undefined, flags: Flags): Promise<void> {
+  if (flags.global) {
+    const cacheDir = globalCacheDir()
+    const files = existsSync(cacheDir) ? readdirSync(cacheDir).filter((f) => f.endsWith('.db')) : []
+    if (files.length === 0) {
+      console.log(`Global cache is empty (${cacheDir}).`)
+      return
+    }
+    console.log(`Global cache (${cacheDir}):`)
+    for (const f of files) {
+      const info = readIndexInfo(join(cacheDir, f))
+      if (info) printIndexInfo(info)
+    }
+    return
+  }
+
+  // Caches associated with a specific repo: local, global, and any explicit path.
+  const target = dir ?? process.cwd()
+  const candidates = new Set<string>([localIndexPath(target), globalIndexPath(target)])
+  if (flags.index) candidates.add(resolve(process.cwd(), flags.index))
+  if (process.env.CODEGRAPH_INDEX) candidates.add(resolve(process.cwd(), process.env.CODEGRAPH_INDEX))
+
+  const found = [...candidates].map(readIndexInfo).filter((i): i is IndexInfo => i !== undefined)
+  if (found.length === 0) {
+    console.log(`No index found for ${target}. Run "codegraph index ${dir ?? '.'}".`)
+    return
+  }
+  console.log(`Indexes for ${target}:`)
+  for (const info of found) printIndexInfo(info)
 }
 
 async function cmdServe(dir: string, flags: Flags): Promise<void> {
@@ -119,10 +301,34 @@ async function cmdServe(dir: string, flags: Flags): Promise<void> {
     fail('serve requires the optional dependency "@ai-application-toolkit/mcp" (npm i @ai-application-toolkit/mcp)')
   )
 
-  const graph = await buildCodeGraph(buildOptions(dir, flags))
-  console.log(`Indexed ${graph.files().length} files, ${graph.symbols().length} symbols.`)
+  // Persistence is best-effort: if better-sqlite3 is unavailable, serve still
+  // works from an in-memory build (without incremental caching / hot-swap).
+  let store: GraphStore | undefined
+  try {
+    store = openSqliteStore(resolveIndexPath(dir, flags))
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    console.warn(`${reason}\nServing from an in-memory build (no incremental cache).`)
+  }
 
-  const capability = defineCodegraphCapability(graph)
+  const options: BuildCodeGraphOptions = { ...buildOptions(dir, flags), ...(store ? { store } : {}) }
+
+  // Fast start: if the store already holds a resolved graph, serve it instantly
+  // and refresh in the background. Otherwise build synchronously (first run).
+  let graph: CodeGraph
+  const cached = store ? await loadCodeGraph(store) : undefined
+  if (cached) {
+    graph = cached
+    console.log(`Loaded ${graph.files().length} files, ${graph.symbols().length} symbols from the index.`)
+    void buildCodeGraph({ ...options, onStats: (s) => console.log(`Synced (${describeStats(s)}).`) })
+      .then((g) => { graph = g })
+      .catch((e) => console.warn('sync:', e instanceof Error ? e.message : e))
+  } else {
+    graph = await buildCodeGraph({ ...options, onStats: (s) => console.log(`(${describeStats(s)})`) })
+    console.log(`Indexed ${graph.files().length} files, ${graph.symbols().length} symbols.`)
+  }
+
+  const capability = defineCodegraphCapability(() => graph)
   const path = flags.path ?? '/mcp'
 
   const preferredPort = flags.port ?? DEFAULT_PORT
@@ -147,6 +353,25 @@ async function cmdServe(dir: string, flags: Flags): Promise<void> {
   console.log(`\nMCP server listening on ${localUrl}`)
   console.log('Tools: ' + capability.tools.map((t) => t.id).join(', '))
 
+  let watcher: Watcher | undefined
+  if (store && flags.watch !== false) {
+    watcher = watchDirectory(
+      dir,
+      async () => {
+        // Hot rebuild: refresh facts + in-memory graph, but skip rewriting the
+        // whole graph tables on every save (persisted once on shutdown).
+        graph = await buildCodeGraph({ ...options, persistGraph: false })
+        console.log(`Re-synced: ${graph.files().length} files, ${graph.symbols().length} symbols.`)
+      },
+      { onError: (error) => console.warn('watch:', error instanceof Error ? error.message : error) }
+    )
+    if (watcher.started) {
+      console.log('Watching for changes… (--no-watch to disable)')
+    } else {
+      console.warn('File watching is unavailable on this platform — run `codegraph sync` to refresh the index.')
+    }
+  }
+
   let tunnel: { getURL(): Promise<string>; close(): Promise<void> } | undefined
   if (flags.tunnel) {
     const untun = await import('untun').catch(() =>
@@ -160,8 +385,12 @@ async function cmdServe(dir: string, flags: Flags): Promise<void> {
 
   const shutdown = async () => {
     console.log('\nShutting down…')
+    watcher?.close()
+    // Persist the latest resolved graph once, so the next start loads instantly.
+    if (store) await Promise.resolve(store.saveGraph(graph.toJSON())).catch(() => {})
     if (tunnel) await tunnel.close().catch(() => {})
     server.close()
+    store?.close()
     process.exit(0)
   }
   process.on('SIGINT', shutdown)
@@ -180,12 +409,20 @@ async function main(): Promise<void> {
     console.log(HELP)
     return
   }
-  if (command !== 'build' && command !== 'serve') fail(`Unknown command: ${command}`)
-  if (!dirArg) fail(`${command} requires a <dir> argument`)
-  const dir = resolve(process.cwd(), dirArg)
+  const commands = ['build', 'index', 'sync', 'status', 'serve', 'list']
+  if (!commands.includes(command)) fail(`Unknown command: ${command}`)
+  // `list` works without a <dir> (e.g. `list --global`, or the current repo).
+  if (!dirArg && command !== 'list') fail(`${command} requires a <dir> argument`)
+  const dir = dirArg ? resolve(process.cwd(), dirArg) : undefined
 
-  if (command === 'build') await cmdBuild(dir, flags)
-  else await cmdServe(dir, flags)
+  switch (command) {
+    case 'build': await cmdBuild(dir!, flags); break
+    case 'index': await cmdIndex(dir!, flags, 'index'); break
+    case 'sync': await cmdIndex(dir!, flags, 'sync'); break
+    case 'status': await cmdStatus(dir!, flags); break
+    case 'serve': await cmdServe(dir!, flags); break
+    case 'list': await cmdList(dir, flags); break
+  }
 }
 
 main().catch((error: unknown) => {

@@ -8,13 +8,25 @@
 // Side-effect import: registers the PageRank implementation on CodeGraph.
 import './rank.js'
 
-export { buildCodeGraph, type BuildCodeGraphOptions } from './build.js'
+export { buildCodeGraph, loadCodeGraph, type BuildCodeGraphOptions, type BuildStats } from './build.js'
+export {
+  STORE_SCHEMA_VERSION,
+  type GraphStore,
+  type StoreMeta,
+  type FileRecord
+} from './store.js'
+export { SqliteGraphStore, openSqliteStore, withSqliteStore, type SqliteDriver } from './store.sqlite.js'
+export { watchDirectory, type WatchOptions, type Watcher } from './watch.js'
 export {
   CodeGraph,
   type EdgeKind,
+  type EdgeMeta,
   type FileNode,
   type GraphEdge,
   type GraphNode,
+  type ImpactNode,
+  type ImpactOptions,
+  type ImpactResult,
   type NeighborOptions,
   type RankedContextOptions,
   type RankedNode,

@@ -31,15 +31,28 @@ function serializeNode(node: GraphNode) {
     : { id: node.id, kind: 'file' as const, path: node.path, language: node.language }
 }
 
-const EDGE_KINDS: EdgeKind[] = ['contains', 'imports', 'references']
+const EDGE_KINDS: EdgeKind[] = ['contains', 'imports', 'references', 'calls']
+
+const TEST_FILE = /(\.test\.|\.spec\.|_test\.|_spec\.|\/tests?\/|\/__tests__\/)/i
+
+function serializeImpactNode(item: import('./graph.js').ImpactNode) {
+  const n = item.node
+  const confidence = Math.round(item.confidence * 100) / 100
+  return n.kind === 'symbol'
+    ? { id: n.id, name: n.name, symbolKind: n.symbolKind, file: n.file, line: n.startLine, confidence }
+    : { id: n.id, path: n.path, confidence }
+}
 
 export function defineCodegraphCapability(
-  graph: CodeGraph,
+  graph: CodeGraph | (() => CodeGraph),
   options: CodegraphCapabilityOptions = {}
 ): Capability {
   const prefix = options.idPrefix ?? 'codegraph'
   const defaultLimit = options.defaultLimit ?? 25
   const id = (name: string) => `${prefix}_${name}`
+  // Resolve lazily so `serve --watch` can hot-swap the graph after an
+  // incremental rebuild without recreating the capability.
+  const getGraph = typeof graph === 'function' ? graph : () => graph
 
   const searchSymbols = defineTool<
     { name?: string; kind?: SymbolKind; limit?: number },
@@ -63,7 +76,7 @@ export function defineCodegraphCapability(
     },
     execute: ({ name, kind, limit }) => {
       const needle = name?.toLowerCase()
-      const matches = graph
+      const matches = getGraph()
         .symbols()
         .filter((s) => (needle ? s.name.toLowerCase().includes(needle) : true))
         .filter((s) => (kind ? s.symbolKind === kind : true))
@@ -84,7 +97,7 @@ export function defineCodegraphCapability(
       required: ['name'],
       additionalProperties: false
     },
-    execute: ({ name }) => graph.findDefinition(name).map(serializeNode)
+    execute: ({ name }) => getGraph().findDefinition(name).map(serializeNode)
   })
 
   const findReferences = defineTool<
@@ -103,7 +116,7 @@ export function defineCodegraphCapability(
       additionalProperties: false
     },
     execute: ({ symbol, limit }) =>
-      graph.findReferences(symbol).slice(0, limit ?? defaultLimit).map(serializeNode)
+      getGraph().findReferences(symbol).slice(0, limit ?? defaultLimit).map(serializeNode)
   })
 
   const neighbors = defineTool<
@@ -128,7 +141,7 @@ export function defineCodegraphCapability(
       additionalProperties: false
     },
     execute: ({ id: nodeId, direction = 'both', edgeKinds, limit }) =>
-      graph
+      getGraph()
         .neighbors(nodeId, {
           outgoing: direction !== 'in',
           incoming: direction !== 'out',
@@ -155,7 +168,7 @@ export function defineCodegraphCapability(
       additionalProperties: false
     },
     execute: ({ path }) => {
-      const summary = graph.fileSummary(path)
+      const summary = getGraph().fileSummary(path)
       if (!summary) return null
       return {
         file: serializeNode(summary.file),
@@ -186,9 +199,110 @@ export function defineCodegraphCapability(
       additionalProperties: false
     },
     execute: ({ seeds, kind, limit }) =>
-      graph
+      getGraph()
         .rankedContext({ seeds, kind, limit: limit ?? defaultLimit })
         .map((r) => ({ node: serializeNode(r.node), score: r.score }))
+  })
+
+  const callers = defineTool<
+    { symbol: string; minConfidence?: number; limit?: number },
+    ReturnType<typeof serializeImpactNode>[]
+  >({
+    id: id('callers'),
+    description:
+      'Direct callers of a symbol (who calls it), each with a confidence score. Use before changing a symbol.',
+    input: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'Symbol node id or exact name.' },
+        minConfidence: { type: 'number', description: 'Drop edges below this confidence (0–1).' },
+        limit: { type: 'integer' }
+      },
+      required: ['symbol'],
+      additionalProperties: false
+    },
+    execute: ({ symbol, minConfidence, limit }) =>
+      (getGraph().impact(symbol, { direction: 'callers', maxDepth: 1, minConfidence }).groups[0]?.nodes ?? [])
+        .slice(0, limit ?? defaultLimit)
+        .map(serializeImpactNode)
+  })
+
+  const callees = defineTool<
+    { symbol: string; minConfidence?: number; limit?: number },
+    ReturnType<typeof serializeImpactNode>[]
+  >({
+    id: id('callees'),
+    description: 'Direct callees of a symbol (what it calls), each with a confidence score.',
+    input: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'Symbol node id or exact name.' },
+        minConfidence: { type: 'number', description: 'Drop edges below this confidence (0–1).' },
+        limit: { type: 'integer' }
+      },
+      required: ['symbol'],
+      additionalProperties: false
+    },
+    execute: ({ symbol, minConfidence, limit }) =>
+      (getGraph().impact(symbol, { direction: 'callees', maxDepth: 1, minConfidence }).groups[0]?.nodes ?? [])
+        .slice(0, limit ?? defaultLimit)
+        .map(serializeImpactNode)
+  })
+
+  const impact = defineTool<
+    { symbol: string; maxDepth?: number; minConfidence?: number },
+    {
+      target: string
+      groups: { depth: number; nodes: ReturnType<typeof serializeImpactNode>[] }[]
+      truncated: boolean
+    }
+  >({
+    id: id('impact'),
+    description:
+      'Blast radius of changing a symbol: every transitive caller grouped by depth, each with a confidence score. One call replaces chaining many caller lookups.',
+    input: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'Symbol node id or exact name.' },
+        maxDepth: { type: 'integer', description: 'Max hops (default 5).' },
+        minConfidence: { type: 'number', description: 'Drop edges below this confidence (0–1).' }
+      },
+      required: ['symbol'],
+      additionalProperties: false
+    },
+    execute: ({ symbol, maxDepth, minConfidence }) => {
+      const result = getGraph().impact(symbol, { direction: 'callers', maxDepth, minConfidence })
+      return {
+        target: symbol,
+        groups: result.groups.map((g) => ({ depth: g.depth, nodes: g.nodes.map(serializeImpactNode) })),
+        truncated: result.truncated
+      }
+    }
+  })
+
+  const affected = defineTool<
+    { symbol: string; maxDepth?: number; minConfidence?: number },
+    ReturnType<typeof serializeImpactNode>[]
+  >({
+    id: id('affected'),
+    description:
+      'Test files/symbols in the blast radius of a symbol — which tests to run after changing it.',
+    input: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'Symbol node id or exact name.' },
+        maxDepth: { type: 'integer', description: 'Max hops (default 5).' },
+        minConfidence: { type: 'number', description: 'Drop edges below this confidence (0–1).' }
+      },
+      required: ['symbol'],
+      additionalProperties: false
+    },
+    execute: ({ symbol, maxDepth, minConfidence }) =>
+      getGraph()
+        .impact(symbol, { direction: 'callers', maxDepth, minConfidence })
+        .groups.flatMap((g) => g.nodes)
+        .filter((item) => TEST_FILE.test(item.node.kind === 'symbol' ? item.node.file : item.node.path))
+        .map(serializeImpactNode)
   })
 
   const tools: AnyToolDefinition[] = [
@@ -197,7 +311,11 @@ export function defineCodegraphCapability(
     findReferences,
     neighbors,
     fileSummary,
-    relevantContext
+    relevantContext,
+    callers,
+    callees,
+    impact,
+    affected
   ]
 
   return defineCapability({

@@ -37,8 +37,17 @@ npx @ai-application-toolkit/codegraph build ./src --json > graph.json
 # Restrict languages
 npx @ai-application-toolkit/codegraph build ./src --lang typescript,python,csharp
 
+# Build/update a persistent, incremental index under ./src/.codegraph/
+# (unchanged files are never re-parsed — a warm run is near-instant)
+npx @ai-application-toolkit/codegraph index ./src
+npx @ai-application-toolkit/codegraph status ./src   # freshness, size, counts
+npx @ai-application-toolkit/codegraph list ./src     # this repo's indexes
+npx @ai-application-toolkit/codegraph list --global  # every global-cache index
+
 # Serve the graph as an MCP server over HTTP …
 # (omit --port to auto-select a free port from 3000; a busy --port falls back to the next free one)
+# serve starts instantly from the persistent index, refreshes in the background,
+# and watches for changes — hot-swapping the graph on edits (--no-watch to disable).
 npx @ai-application-toolkit/codegraph serve ./src --port 3000
 
 # … and publish a public URL via untun (Cloudflare quick tunnel)
@@ -49,6 +58,36 @@ npx @ai-application-toolkit/codegraph serve ./src --tunnel
 `--tunnel` needs `untun`; both are imported lazily so `build` stays lightweight.
 On its first run `--tunnel` downloads `cloudflared` and prompts you to accept
 its license, so run it in an interactive terminal.
+
+### Persistent index
+
+`index`, `sync` and `serve` keep a SQLite index that caches per-file parse
+results, so only changed files are re-parsed — unchanged files are skipped by an
+mtime/size check without even being read, making a warm rebuild near-instant.
+`index` builds or updates the index; `sync` updates an existing one (and errors
+if there is none); `build` is a one-shot in-memory scan that uses no index.
+
+**No install needed on modern Node.** The SQLite backend is chosen at runtime:
+
+1. `better-sqlite3` if it is installed (stable, quiet), else
+2. Node's built-in **`node:sqlite`** (Node ≥ 23.4) — zero dependency, else
+3. `serve` falls back to a plain in-memory build (no cache).
+
+So on recent Node it just works; on older Node run `npm i better-sqlite3`. Force
+a backend with `CODEGRAPH_SQLITE_DRIVER=node` (skip the native module) or
+`=better`.
+
+**Index location.** Defaults to `<dir>/.codegraph/index.db` (add `.codegraph/`
+to `.gitignore`). Override with:
+
+- `--index <path>` — an explicit file, or set `CODEGRAPH_INDEX`
+- `--global` — store under `~/.cache/codegraph/` (per project), keeping the repo
+  clean
+
+```bash
+npx @ai-application-toolkit/codegraph index ./src --global
+npx @ai-application-toolkit/codegraph serve ./src --index /tmp/mygraph.db
+```
 
 ## Library API
 
@@ -61,8 +100,33 @@ graph.findDefinition('buildCodeGraph') // where is it declared?
 graph.findReferences('CodeGraph')      // who uses it?
 graph.fileSummary('src/build.ts')      // symbols + imported files
 
+// Call graph:
+graph.callers('parseFile')             // who calls it (confidence-scored via impact)
+graph.callees('buildCodeGraph')        // what it calls
+graph.impact('parseFile', { direction: 'callers' }) // blast radius, grouped by depth
+
 // "What matters around what I'm editing?" — ranked context for an LLM:
 graph.rankedContext({ seeds: ['parseFile'], limit: 15 })
+```
+
+## Call graph & impact analysis
+
+On top of coarse, name-based `references`, codegraph resolves a **scope-aware call
+graph**: `calls` edges from a symbol to the definition it invokes, each with a
+**confidence** score (1.0 exact, 0.8 high, 0.5 medium). Resolution uses imports,
+`this`, and lightweight type tracking (`new X()` / typed params → `x.method()`)
+for TS/JS/Python; other languages resolve by name/uniqueness. It is **precision-
+first** — ambiguous or cross-language calls are skipped rather than mis-wired.
+
+`codegraph_impact` returns the full blast radius in **one** call — every
+transitive caller grouped by depth with confidence — so an agent knows what a
+change risks before touching it:
+
+```jsonc
+// codegraph_impact { "symbol": "registerAllPlugins" }
+{ "target": "registerAllPlugins",
+  "groups": [{ "depth": 1, "nodes": [{ "name": "Bridge", "file": "…/Bridge.java", "line": 192, "confidence": 1 }] }],
+  "truncated": false }
 ```
 
 ## As tools / capability
@@ -78,7 +142,9 @@ const codegraph = defineCodegraphCapability(graph)
 const runtime = createRuntime({ tools: collectCapabilityTools([codegraph]) })
 // Tools: codegraph_search_symbols, codegraph_find_definition,
 //        codegraph_find_references, codegraph_neighbors,
-//        codegraph_file_summary, codegraph_relevant_context
+//        codegraph_file_summary, codegraph_relevant_context,
+//        codegraph_callers, codegraph_callees, codegraph_impact,
+//        codegraph_affected
 ```
 
 ## Ask your codebase (RAG)
@@ -105,12 +171,13 @@ agent) can then explore the codebase remotely:
 
 ```ts
 import { startHttpMcpServer } from '@ai-application-toolkit/mcp'
+import { collectCapabilityTools } from '@ai-application-toolkit/capability'
 
 const graph = await buildCodeGraph({ dir: './src' })
 await startHttpMcpServer({
   name: 'codegraph-mcp',
   version: '1.0.0',
-  tools: defineCodegraphCapability(graph).tools,
+  tools: collectCapabilityTools([defineCodegraphCapability(graph)]),
   port: 3000
 })
 // Streamable HTTP at http://localhost:3000/mcp
