@@ -35,6 +35,8 @@ const record = (path: string, hash: string): FileRecord => ({
   path,
   language: 'typescript',
   hash,
+  mtimeMs: 1000,
+  size: 42,
   facts: {
     definitions: [{ name: 'foo', kind: 'function', startLine: 1, endLine: 3, startIndex: 0, endIndex: 20 }],
     references: [{ name: 'bar', startIndex: 10 }],
@@ -190,6 +192,8 @@ describe('openSqliteStore error handling', () => {
           path: 'a.ts',
           language: 'typescript',
           hash: 'h',
+          mtimeMs: 1,
+          size: 1,
           facts: { definitions: [], references: [], imports: [] }
         }
       ])

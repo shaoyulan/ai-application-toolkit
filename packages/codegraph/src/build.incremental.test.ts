@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile, unlink } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile, unlink, utimes } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -51,6 +51,24 @@ describe('incremental build', () => {
     await writeFile(join(dir, 'a.ts'), 'export function a() { return b() + 1 }\n')
     const { stats } = await build()
     expect(stats).toMatchObject({ parsed: 1, reused: 1, deleted: 0 })
+  })
+
+  it('does not re-parse when only mtime changes (identical content)', async () => {
+    await build()
+    const future = new Date(Date.now() + 10_000)
+    await utimes(join(dir, 'a.ts'), future, future) // touch: new mtime, same bytes
+    const { stats } = await build()
+    expect(stats).toMatchObject({ parsed: 0, reused: 2 })
+  })
+
+  it('persistGraph:false updates facts but leaves the stored graph untouched', async () => {
+    await build()
+    const before = store.loadGraph()
+    await writeFile(join(dir, 'a.ts'), 'export function a() { return b() + 99 }\n')
+    let stats: BuildStats | undefined
+    await buildCodeGraph({ dir, store, persistGraph: false, onStats: (s) => (stats = s) })
+    expect(stats).toMatchObject({ parsed: 1, reused: 1 }) // facts were updated
+    expect(store.loadGraph()).toEqual(before) // but the persisted graph is unchanged
   })
 
   it('drops deleted files from the cache and graph', async () => {

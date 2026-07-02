@@ -17,7 +17,7 @@ import { dirname } from 'node:path'
 import { ToolkitError } from '@ai-application-toolkit/core'
 import type { EdgeKind, GraphNode, SerializedCodeGraph, SymbolKind } from './graph.js'
 import type { FileFacts } from './parser.js'
-import type { FileRecord, GraphCommit, GraphStore, StoreMeta } from './store.js'
+import { STORE_SCHEMA_VERSION, type FileRecord, type FileStamp, type GraphCommit, type GraphStore, type StoreMeta } from './store.js'
 
 const require = createRequire(import.meta.url)
 
@@ -157,6 +157,8 @@ CREATE TABLE IF NOT EXISTS files (
   path TEXT PRIMARY KEY,
   language TEXT NOT NULL,
   hash TEXT NOT NULL,
+  mtime_ms REAL NOT NULL,
+  size INTEGER NOT NULL,
   facts_json TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS nodes (
@@ -193,6 +195,19 @@ export class SqliteGraphStore implements GraphStore {
     this.db = opened.db
     this.driver = opened.driver
     this.db.exec(SCHEMA)
+    this.migrateIfStale()
+  }
+
+  /** A schema bump can't be reconciled column-by-column, so drop and recreate
+   * everything (the build will cold-rebuild anyway on a version mismatch). */
+  private migrateIfStale(): void {
+    const row = this.db.prepare("SELECT value FROM meta WHERE key = 'schemaVersion'").get() as
+      | { value: string }
+      | undefined
+    if (row && Number(row.value) !== STORE_SCHEMA_VERSION) {
+      this.db.exec('DROP TABLE IF EXISTS meta; DROP TABLE IF EXISTS files; DROP TABLE IF EXISTS nodes; DROP TABLE IF EXISTS edges;')
+      this.db.exec(SCHEMA)
+    }
   }
 
   meta(): StoreMeta | undefined {
@@ -224,18 +239,30 @@ export class SqliteGraphStore implements GraphStore {
     return new Map(rows.map((r) => [r.path, r.hash]))
   }
 
+  getFileStamps(): Map<string, FileStamp> {
+    const rows = this.db.prepare('SELECT path, hash, mtime_ms, size FROM files').all() as {
+      path: string
+      hash: string
+      mtime_ms: number
+      size: number
+    }[]
+    return new Map(rows.map((r) => [r.path, { hash: r.hash, mtimeMs: r.mtime_ms, size: r.size }]))
+  }
+
   getFacts(paths: string[]): Map<string, FileRecord> {
     const result = new Map<string, FileRecord>()
-    const stmt = this.db.prepare('SELECT path, language, hash, facts_json FROM files WHERE path = ?')
+    const stmt = this.db.prepare('SELECT path, language, hash, mtime_ms, size, facts_json FROM files WHERE path = ?')
     for (const path of paths) {
       const row = stmt.get(path) as
-        | { path: string; language: string; hash: string; facts_json: string }
+        | { path: string; language: string; hash: string; mtime_ms: number; size: number; facts_json: string }
         | undefined
       if (row) {
         result.set(row.path, {
           path: row.path,
           language: row.language,
           hash: row.hash,
+          mtimeMs: row.mtime_ms,
+          size: row.size,
           facts: JSON.parse(row.facts_json) as FileFacts
         })
       }
@@ -245,10 +272,10 @@ export class SqliteGraphStore implements GraphStore {
 
   putFacts(records: FileRecord[]): void {
     const stmt = this.db.prepare(
-      'INSERT OR REPLACE INTO files (path, language, hash, facts_json) VALUES (?, ?, ?, ?)'
+      'INSERT OR REPLACE INTO files (path, language, hash, mtime_ms, size, facts_json) VALUES (?, ?, ?, ?, ?, ?)'
     )
     const tx = this.db.transaction((rows: FileRecord[]) => {
-      for (const r of rows) stmt.run(r.path, r.language, r.hash, JSON.stringify(r.facts))
+      for (const r of rows) stmt.run(r.path, r.language, r.hash, r.mtimeMs, r.size, JSON.stringify(r.facts))
     })
     tx(records)
   }
@@ -285,7 +312,7 @@ export class SqliteGraphStore implements GraphStore {
 
   commit(batch: GraphCommit): void {
     const putFile = this.db.prepare(
-      'INSERT OR REPLACE INTO files (path, language, hash, facts_json) VALUES (?, ?, ?, ?)'
+      'INSERT OR REPLACE INTO files (path, language, hash, mtime_ms, size, facts_json) VALUES (?, ?, ?, ?, ?, ?)'
     )
     const delFile = this.db.prepare('DELETE FROM files WHERE path = ?')
     const insNode = this.db.prepare(
@@ -300,17 +327,20 @@ export class SqliteGraphStore implements GraphStore {
     const tx = this.db.transaction((b: GraphCommit) => {
       if (b.resetFiles) this.db.exec('DELETE FROM files;')
       else for (const p of b.deleteFiles ?? []) delFile.run(p)
-      for (const r of b.facts) putFile.run(r.path, r.language, r.hash, JSON.stringify(r.facts))
+      for (const r of b.facts) putFile.run(r.path, r.language, r.hash, r.mtimeMs, r.size, JSON.stringify(r.facts))
 
-      this.db.exec('DELETE FROM nodes; DELETE FROM edges;')
-      for (const n of b.graph.nodes) {
-        if (n.kind === 'symbol') {
-          insNode.run(n.id, 'symbol', n.name, n.symbolKind, n.file, n.startLine, n.endLine, null)
-        } else {
-          insNode.run(n.id, 'file', null, null, n.path, null, null, n.language)
+      // Only rewrite the resolved graph when one is provided.
+      if (b.graph) {
+        this.db.exec('DELETE FROM nodes; DELETE FROM edges;')
+        for (const n of b.graph.nodes) {
+          if (n.kind === 'symbol') {
+            insNode.run(n.id, 'symbol', n.name, n.symbolKind, n.file, n.startLine, n.endLine, null)
+          } else {
+            insNode.run(n.id, 'file', null, null, n.path, null, null, n.language)
+          }
         }
+        for (const e of b.graph.edges) insEdge.run(e.from, e.to, e.kind, null)
       }
-      for (const e of b.graph.edges) insEdge.run(e.from, e.to, e.kind, null)
 
       setMetaStmt.run('schemaVersion', String(b.meta.schemaVersion))
       setMetaStmt.run('treeSitterVersion', b.meta.treeSitterVersion)

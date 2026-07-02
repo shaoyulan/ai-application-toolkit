@@ -16,7 +16,7 @@ import type { SerializedCodeGraph } from './graph.js'
 import type { FileFacts } from './parser.js'
 
 /** Bumped when the on-disk schema or fact shape changes incompatibly. */
-export const STORE_SCHEMA_VERSION = 1
+export const STORE_SCHEMA_VERSION = 2
 
 /** Identifies the index build so a mismatch forces a cold rebuild. */
 export interface StoreMeta {
@@ -38,8 +38,20 @@ export interface FileRecord {
   language: string
   /** Content hash of the file the facts were parsed from. */
   hash: string
+  /** Modification time (ms) when parsed — lets an unchanged file be skipped
+   * without reading/hashing it. */
+  mtimeMs: number
+  /** File size in bytes when parsed (paired with mtime for the cheap check). */
+  size: number
   /** The extracted parse facts. */
   facts: FileFacts
+}
+
+/** A file's cache stamp — enough to decide staleness without reading it. */
+export interface FileStamp {
+  hash: string
+  mtimeMs: number
+  size: number
 }
 
 /** A completed build to persist atomically via {@link GraphStore.commit}. */
@@ -50,8 +62,10 @@ export interface GraphCommit {
   deleteFiles?: string[]
   /** Clear the whole file cache first (used for a cold rebuild). */
   resetFiles?: boolean
-  /** The resolved graph to persist (replaces any previous graph). */
-  graph: SerializedCodeGraph
+  /** The resolved graph to persist. Omit to leave the stored graph untouched
+   * (facts are the source of truth; the graph is a derived cache that `serve`
+   * refreshes on demand). */
+  graph?: SerializedCodeGraph
   /** Index identity to stamp. */
   meta: StoreMeta
 }
@@ -68,6 +82,8 @@ export interface GraphStore {
 
   /** Map of cached path -> content hash, for fast staleness comparison. */
   getFileHashes(): Awaitable<Map<string, string>>
+  /** Map of cached path -> {hash, mtimeMs, size}, for the mtime/size fast path. */
+  getFileStamps(): Awaitable<Map<string, FileStamp>>
   /** Cached parse facts for the given paths (missing paths are omitted). */
   getFacts(paths: string[]): Awaitable<Map<string, FileRecord>>
   /** Insert or replace cached parse facts. */

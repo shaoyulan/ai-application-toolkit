@@ -23,7 +23,7 @@ import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { collectCapabilityTools } from '@ai-application-toolkit/capability'
-import { buildCodeGraph, type BuildCodeGraphOptions, type BuildStats } from './build.js'
+import { buildCodeGraph, loadCodeGraph, type BuildCodeGraphOptions, type BuildStats } from './build.js'
 import type { CodeGraph } from './graph.js'
 import { findAvailablePort } from './port.js'
 import type { GraphStore } from './store.js'
@@ -312,8 +312,21 @@ async function cmdServe(dir: string, flags: Flags): Promise<void> {
   }
 
   const options: BuildCodeGraphOptions = { ...buildOptions(dir, flags), ...(store ? { store } : {}) }
-  let graph: CodeGraph = await buildCodeGraph({ ...options, onStats: (s) => console.log(`(${describeStats(s)})`) })
-  console.log(`Indexed ${graph.files().length} files, ${graph.symbols().length} symbols.`)
+
+  // Fast start: if the store already holds a resolved graph, serve it instantly
+  // and refresh in the background. Otherwise build synchronously (first run).
+  let graph: CodeGraph
+  const cached = store ? await loadCodeGraph(store) : undefined
+  if (cached) {
+    graph = cached
+    console.log(`Loaded ${graph.files().length} files, ${graph.symbols().length} symbols from the index.`)
+    void buildCodeGraph({ ...options, onStats: (s) => console.log(`Synced (${describeStats(s)}).`) })
+      .then((g) => { graph = g })
+      .catch((e) => console.warn('sync:', e instanceof Error ? e.message : e))
+  } else {
+    graph = await buildCodeGraph({ ...options, onStats: (s) => console.log(`(${describeStats(s)})`) })
+    console.log(`Indexed ${graph.files().length} files, ${graph.symbols().length} symbols.`)
+  }
 
   const capability = defineCodegraphCapability(() => graph)
   const path = flags.path ?? '/mcp'
@@ -345,7 +358,9 @@ async function cmdServe(dir: string, flags: Flags): Promise<void> {
     watcher = watchDirectory(
       dir,
       async () => {
-        graph = await buildCodeGraph(options)
+        // Hot rebuild: refresh facts + in-memory graph, but skip rewriting the
+        // whole graph tables on every save (persisted once on shutdown).
+        graph = await buildCodeGraph({ ...options, persistGraph: false })
         console.log(`Re-synced: ${graph.files().length} files, ${graph.symbols().length} symbols.`)
       },
       { onError: (error) => console.warn('watch:', error instanceof Error ? error.message : error) }
@@ -371,6 +386,8 @@ async function cmdServe(dir: string, flags: Flags): Promise<void> {
   const shutdown = async () => {
     console.log('\nShutting down…')
     watcher?.close()
+    // Persist the latest resolved graph once, so the next start loads instantly.
+    if (store) await Promise.resolve(store.saveGraph(graph.toJSON())).catch(() => {})
     if (tunnel) await tunnel.close().catch(() => {})
     server.close()
     store?.close()

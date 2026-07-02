@@ -22,7 +22,7 @@ import {
   type ImportStyle,
   type LanguageSpec
 } from './parser.js'
-import { STORE_SCHEMA_VERSION, type FileRecord, type GraphStore, type StoreMeta } from './store.js'
+import { STORE_SCHEMA_VERSION, type FileRecord, type FileStamp, type GraphStore, type StoreMeta } from './store.js'
 // Importing rank.ts here guarantees the PageRank implementation is registered
 // before any CodeGraph this module returns is used.
 import './rank.js'
@@ -87,6 +87,14 @@ export interface BuildCodeGraphOptions {
    * a pure in-memory build (the default).
    */
   store?: GraphStore
+  /**
+   * Persist the resolved graph to the store (default true). Set false to update
+   * only the parse-fact cache — `serve` uses this on hot rebuilds to avoid
+   * rewriting the whole nodes/edges tables on every save, persisting the graph
+   * once on shutdown instead. The graph is derived from facts, so a stale stored
+   * graph is always safely rebuilt.
+   */
+  persistGraph?: boolean
   /** Called once with build counts (files parsed vs reused) after a build. */
   onStats?: (stats: BuildStats) => void
   signal?: AbortSignal
@@ -286,34 +294,48 @@ export async function buildCodeGraph(options: BuildCodeGraphOptions): Promise<Co
   }
   const inspection = store ? await inspectStore(store, wanted) : undefined
   const compatible = inspection?.compatible ?? false
-  const previousHashes = inspection?.previousHashes ?? new Map<string, string>()
-  const cachedHashes = compatible ? previousHashes : new Map<string, string>()
+  const previousStamps = inspection?.previousStamps ?? new Map<string, FileStamp>()
+  const cachedStamps = compatible ? previousStamps : new Map<string, FileStamp>()
 
   const nodes: GraphNode[] = []
   const edges: GraphEdge[] = []
   const definitionsByName = new Map<string, SymbolNode[]>()
 
-  // Pass 1: read + hash each file, deciding reuse vs re-parse.
+  // Pass 1: decide reuse vs re-parse. Unchanged mtime+size ⇒ reuse cached facts
+  // without even reading the file; otherwise read+hash and re-parse only when the
+  // content hash actually changed (so a `touch` refreshes the stamp, not a parse).
   const specByPath = new Map<string, LanguageSpec>()
   const reusePaths: string[] = []
+  const stampRefresh = new Map<string, { hash: string; language: string; mtimeMs: number; size: number }>()
   const factsByPath = new Map<string, FileFacts>()
   const toPut: FileRecord[] = []
   let parsed = 0
 
   for (const file of scanned) {
     options.signal?.throwIfAborted()
-    const source = await readFile(file.absPath, 'utf8')
     specByPath.set(file.relPath, file.spec)
+    const prev = cachedStamps.get(file.relPath)
+
+    if (prev && prev.mtimeMs === file.mtimeMs && prev.size === file.size) {
+      reusePaths.push(file.relPath) // unchanged — reuse without reading
+      continue
+    }
+
+    const source = await readFile(file.absPath, 'utf8')
     const hash = hashSource(source)
 
-    if (store && cachedHashes.get(file.relPath) === hash) {
+    if (prev && prev.hash === hash) {
+      // Same content, different mtime/size stamp — reuse facts, refresh the stamp.
       reusePaths.push(file.relPath)
+      stampRefresh.set(file.relPath, { hash, language: file.spec.id, mtimeMs: file.mtimeMs, size: file.size })
       continue
     }
 
     const facts = await parseFile(file.spec, source)
     factsByPath.set(file.relPath, facts)
-    if (store) toPut.push({ path: file.relPath, language: file.spec.id, hash, facts })
+    if (store) {
+      toPut.push({ path: file.relPath, language: file.spec.id, hash, mtimeMs: file.mtimeMs, size: file.size, facts })
+    }
     parsed++
   }
 
@@ -326,12 +348,18 @@ export async function buildCodeGraph(options: BuildCodeGraphOptions): Promise<Co
       if (record) {
         factsByPath.set(relPath, record.facts)
         reused++
+        const refresh = stampRefresh.get(relPath)
+        if (refresh) {
+          toPut.push({ path: relPath, language: refresh.language, hash: refresh.hash, mtimeMs: refresh.mtimeMs, size: refresh.size, facts: record.facts })
+        }
       } else {
+        // Stamp promised a cache hit but the facts row is gone — re-parse.
         const spec = specByPath.get(relPath)!
-        const source = await readFile(join(options.dir, relPath), 'utf8')
+        const abs = join(options.dir, relPath)
+        const [source, info] = await Promise.all([readFile(abs, 'utf8'), stat(abs)])
         const facts = await parseFile(spec, source)
         factsByPath.set(relPath, facts)
-        toPut.push({ path: relPath, language: spec.id, hash: hashSource(source), facts })
+        toPut.push({ path: relPath, language: spec.id, hash: hashSource(source), mtimeMs: info.mtimeMs, size: info.size, facts })
         parsed++
       }
     }
@@ -414,13 +442,13 @@ export async function buildCodeGraph(options: BuildCodeGraphOptions): Promise<Co
   let deleted = 0
   if (store) {
     // Warm build: drop files that vanished. Cold build: wipe the whole cache.
-    const stale = compatible ? [...previousHashes.keys()].filter((p) => !fileSet.has(p)) : []
+    const stale = compatible ? [...previousStamps.keys()].filter((p) => !fileSet.has(p)) : []
     deleted = stale.length
     await store.commit({
       facts: toPut,
       deleteFiles: stale,
       resetFiles: !compatible,
-      graph: graph.toJSON(),
+      graph: options.persistGraph === false ? undefined : graph.toJSON(),
       meta: wanted
     })
   }
@@ -447,14 +475,14 @@ export async function loadCodeGraph(store: GraphStore): Promise<CodeGraph | unde
 async function inspectStore(
   store: GraphStore,
   wanted: StoreMeta
-): Promise<{ compatible: boolean; previousHashes: Map<string, string> }> {
+): Promise<{ compatible: boolean; previousStamps: Map<string, FileStamp> }> {
   const current = await store.meta()
   const compatible =
     current !== undefined &&
     current.schemaVersion === wanted.schemaVersion &&
     current.treeSitterVersion === wanted.treeSitterVersion &&
     current.configHash === wanted.configHash
-  return { compatible, previousHashes: await store.getFileHashes() }
+  return { compatible, previousStamps: await store.getFileStamps() }
 }
 
 function define(map: Map<string, SymbolNode[]>, key: string): SymbolNode[] {
